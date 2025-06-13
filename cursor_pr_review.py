@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
-FINALLY PRODUCTION-READY CURSOR PR REVIEW
+CURSOR PR REVIEW
 
-This time I'm ACTUALLY fixing all the issues:
-- NO string templates for YAML (using proper yaml library)
-- Complete CodeRabbit free mode functionality
-- Single-responsibility functions (all under 15 lines)
-- 100% consistent error handling (exceptions only)
-- NO print statements anywhere (pure logging)
-- Complete test coverage
-- Comprehensive documentation
 """
 
 import os
@@ -25,7 +17,7 @@ from dataclasses import dataclass, asdict
 import requests
 import yaml
 
-# Production logging - NO print statements anywhere
+# Production logging 
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Setup production logging with proper levels."""
     log_dir = Path.home() / '.cursor-pr-review'
@@ -233,7 +225,7 @@ class APIClient:
                 )
             raise APIError(f"Anthropic API error: {e}")
 
-# ACTUAL YAML generation (not string templates)
+# YAML generation (not string templates)
 def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
     """Generate workflow using proper YAML structure."""
     env_key = "OPENAI_API_KEY" if config.ai_provider == "openai" else "ANTHROPIC_API_KEY"
@@ -319,7 +311,7 @@ def save_github_workflow(config: ReviewConfig) -> None:
     except OSError as e:
         raise ConfigError(f"Failed to save workflow: {e}", "Check permissions")
 
-# CodeRabbit integration (actual implementation, not stubs)
+# CodeRabbit integration 
 class CodeRabbitClient:
     """Complete CodeRabbit integration."""
     
@@ -407,7 +399,7 @@ class CodeRabbitClient:
             }
         }
 
-# Single-responsibility setup functions (all under 15 lines)
+# Single-responsibility setup functions 
 def prompt_github_token() -> str:
     """Get GitHub token from user."""
     token = input("GitHub token: ").strip()
