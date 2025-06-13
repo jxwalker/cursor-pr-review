@@ -1,0 +1,30 @@
+version: 2
+reviews:
+  request_changes_threshold: medium
+  approve_threshold: low
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+    - main
+    - master
+  auto_approve:
+    enabled: false
+    threshold: low
+  path_filters:
+    ignore:
+    - '*.md'
+    - LICENSE
+    - '*.txt'
+model:
+  provider: openai
+  name: gpt-4.1
+languages:
+  python:
+    reviewers:
+    - ai
+    threshold: medium
+  javascript:
+    reviewers:
+    - ai
+    threshold: medium

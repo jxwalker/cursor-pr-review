@@ -647,21 +647,8 @@ class APIClient:
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:
-        """Post review comments to GitHub PR."""
+        """Post review comments to GitHub PR with user-friendly, actionable output."""
         try:
-            # Create a structured review comment with severity levels
-            review_body = "🤖 **AI Code Review Results**\n\n"
-
-            # Add integration notes if applicable
-            integration_notes = []
-            if hasattr(self, '_last_github_ai_prompt') and self._last_github_ai_prompt:
-                integration_notes.append("GitHub AI agent prompt")
-            if hasattr(self, '_last_coderabbit_count') and self._last_coderabbit_count > 0:
-                integration_notes.append(f"{self._last_coderabbit_count} CodeRabbit comments")
-
-            if integration_notes:
-                review_body += f"*This analysis incorporates and builds upon: {', '.join(integration_notes)} for comprehensive coverage.*\n\n"
-
             # Group comments by severity
             severity_groups = {
                 'critical': [],
@@ -670,12 +657,28 @@ class APIClient:
                 'suggestion': [],
                 'info': []
             }
-
             for comment in comments:
                 severity = comment.get('severity', 'info')
                 severity_groups[severity].append(comment)
 
-            # Add severity sections
+            # Build summary checklist
+            summary = ""
+            summary += "## 🚦 PR Review Summary\n\n"
+            summary += "**What to fix before merging:**\n"
+            blocking = severity_groups['critical'] + severity_groups['error']
+            if blocking:
+                for c in blocking:
+                    summary += f"- [ ] {c['body'].split('.')[0]}\n"
+            else:
+                summary += "- [x] No blocking issues found!\n"
+            summary += "\n**What to improve later:**\n"
+            for c in severity_groups['warning'] + severity_groups['suggestion']:
+                summary += f"- [ ] {c['body'].split('.')[0]}\n"
+            if not (severity_groups['warning'] or severity_groups['suggestion']):
+                summary += "- [x] No suggestions or warnings!\n"
+
+            # Build detailed issues section
+            details = ""
             severity_icons = {
                 'critical': '🚨',
                 'error': '❌',
@@ -683,20 +686,41 @@ class APIClient:
                 'suggestion': '💡',
                 'info': 'ℹ️'
             }
-
             for severity, group_comments in severity_groups.items():
                 if group_comments:
                     icon = severity_icons.get(severity, 'ℹ️')
-                    review_body += f"\n## {icon} {severity.title()} Issues\n\n"
+                    details += f"\n### {icon} {severity.title()} Issues\n\n"
                     for i, comment in enumerate(group_comments, 1):
-                        review_body += f"{i}. {comment['body']}\n"
+                        details += f"**{i}. {comment['body'].split('.')[0]}**\n"
+                        details += f"- **Severity:** {severity.title()}\n"
+                        if 'suggestion' in comment:
+                            details += f"- **How to fix:** {comment['suggestion']}\n"
+                        else:
+                            details += f"- **How to fix:** _(Please address as appropriate)_\n"
+                        details += "\n"
 
-            # Determine review event based on severity and configuration
+            # Build copy-paste instructions for the agent
+            instructions = ""
+            instructions += "---\n"
+            instructions += "## 🤖 Copy-paste instructions for your agent\n\n"
+            if blocking:
+                instructions += "**Please address the following blocking issues before merging:**\n"
+                for c in blocking:
+                    instructions += f"- {c['body'].split('.')[0]}\n"
+            else:
+                instructions += "No blocking issues. You may merge after reviewing suggestions.\n"
+            if severity_groups['warning'] or severity_groups['suggestion']:
+                instructions += "\n**Suggestions for improvement:**\n"
+                for c in severity_groups['warning'] + severity_groups['suggestion']:
+                    instructions += f"- {c['body'].split('.')[0]}\n"
+
+            # Compose the full review body
+            review_body = summary + details + instructions
+
+            # Determine review event
             has_critical = bool(severity_groups['critical'])
             has_errors = bool(severity_groups['error'])
             has_warnings = bool(severity_groups['warning'])
-
-            # Apply strictness settings
             should_request_changes = False
             if self.config.auto_request_changes:
                 if self.config.review_strictness == "strict":
@@ -705,16 +729,7 @@ class APIClient:
                     should_request_changes = has_critical or has_errors
                 elif self.config.review_strictness == "lenient":
                     should_request_changes = has_critical
-
-            if should_request_changes:
-                event = "REQUEST_CHANGES"
-                review_body += "\n---\n⚠️ **This PR has issues that should be addressed before merging.**"
-            else:
-                event = "COMMENT"
-                if has_critical or has_errors:
-                    review_body += "\n---\n⚠️ **Issues found but not blocking merge based on current settings.**"
-                else:
-                    review_body += "\n---\n✅ **No critical issues found. Consider addressing suggestions for code quality.**"
+            event = "REQUEST_CHANGES" if should_request_changes else "COMMENT"
 
             response = self.session.post(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
@@ -919,8 +934,12 @@ def choose_ai_model(client: APIClient) -> str:
     models_data = client.validate_ai_key()
     
     if client.config.ai_provider == 'openai':
-        # Filter for text generation models, exclude unwanted types
-        excluded_keywords = ['audio', 'image', 'tts', 'realtime', 'whisper', 'dall-e', 'legacy', 'deprecated']
+        # Filter for modern text generation models, exclude legacy expensive and unwanted types
+        excluded_keywords = [
+            'audio', 'image', 'tts', 'realtime', 'whisper', 'dall-e', 'legacy', 'deprecated',
+            'gpt-4-turbo', 'gpt-4-0', 'gpt-4-1106', 'gpt-4-0613', 'gpt-4-0314',  # Legacy GPT-4 variants
+            'gpt-3.5-turbo', 'gpt-3.5', 'text-davinci', 'text-curie', 'text-babbage', 'text-ada'  # Legacy models
+        ]
         models = []
         for m in models_data['data']:
             model_id = m['id'].lower()
@@ -1070,22 +1089,71 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
         if all_patterns:
             pattern_analysis = "\n".join(all_patterns)
             improvement_prompt = f"""
-            Based on the following patterns from our recent PRs and reviews, suggest specific improvements to our AI code review tool:
+            Based on the following patterns from our recent PRs and reviews, provide ACTIONABLE improvements to our AI code review tool.
 
+            PATTERNS FOUND:
             {pattern_analysis}
 
-            Please provide:
-            1. Common issues that our tool should better detect
-            2. Improvements to our prompts or analysis logic
-            3. New features that would address recurring problems
-            4. Better integration opportunities with GitHub/CodeRabbit
+            Please provide your response in this EXACT format:
+
+            ## IMMEDIATE ACTIONABLE IMPROVEMENTS
+
+            ### 1. PROMPT ENHANCEMENTS
+            [Specific text to add to our AI prompts, ready to copy-paste]
+
+            ### 2. DETECTION IMPROVEMENTS
+            [Specific issues to add to our detection logic, with examples]
+
+            ### 3. INTEGRATION FIXES
+            [Specific changes to reduce duplication between GitHub AI, CodeRabbit, and our analysis]
+
+            ## IMPLEMENTATION INSTRUCTIONS
+
+            ### FOR DEVELOPERS:
+            [Step-by-step instructions to implement these improvements]
+
+            ### FOR GPT PROMPTS:
+            [Exact prompt text improvements to copy into our code]
+
+            Focus on SPECIFIC, IMPLEMENTABLE changes, not general suggestions.
             """
 
             recommendations = client.analyze_code_with_ai("", improvement_prompt)
 
-            logger.info("📋 Self-Improvement Recommendations:")
-            for i, rec in enumerate(recommendations, 1):
-                logger.info(f"{i}. {rec.get('body', '')}")
+            # Format output in a user-friendly way
+            print("\n" + "="*80)
+            print("🔄 SELF-IMPROVEMENT ANALYSIS RESULTS")
+            print("="*80)
+
+            print(f"\n🎯 ANALYSIS SUMMARY:")
+            print(f"   • PRs analyzed: {len(improvement_insights)}")
+            print(f"   • Patterns found: {len(all_patterns)}")
+            print(f"   • Recommendations generated: {len(recommendations)}")
+
+            print(f"\n🎯 ACTIONABLE RECOMMENDATIONS:")
+            print("-"*80)
+
+            for rec in recommendations:
+                recommendation_text = rec.get('body', '')
+                if recommendation_text:
+                    # Clean up the recommendation text
+                    lines = recommendation_text.split('\n')
+                    for line in lines:
+                        if line.strip():
+                            print(line)
+
+            print("\n" + "="*80)
+            print("💡 NEXT STEPS:")
+            print("1. Review the prompt enhancements above")
+            print("2. Copy-paste the improved prompts into cursor_pr_review.py")
+            print("3. Implement the detection improvements")
+            print("4. Test with a new PR review")
+            print("5. Run self-improve again to measure improvement")
+            print("="*80)
+
+        else:
+            print("\n📊 No patterns found in recent PRs to analyze.")
+            print("💡 Try creating more PRs with GitHub AI prompts and CodeRabbit reviews.")
 
         logger.info("✅ Self-improvement analysis complete!")
 
