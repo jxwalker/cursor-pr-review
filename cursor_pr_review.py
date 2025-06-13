@@ -304,20 +304,44 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             raise APIError(f"Failed to get PR diff: {e}")
 
-    def analyze_code_with_ai(self, diff: str, prompt_template: str) -> List[Dict[str, Any]]:
-        """Analyze code diff using AI and return review comments."""
+    def analyze_code_with_ai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Analyze code diff using AI and return review comments, incorporating CodeRabbit feedback."""
         if self.config.ai_provider == 'openai':
-            return self._analyze_with_openai(diff, prompt_template)
+            return self._analyze_with_openai(diff, prompt_template, coderabbit_comments)
         elif self.config.ai_provider == 'anthropic':
-            return self._analyze_with_anthropic(diff, prompt_template)
+            return self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments)
         else:
             raise ConfigError(f"Unknown AI provider: {self.config.ai_provider}")
 
     @retry_on_failure(max_retries=3, delay=2.0)
-    def _analyze_with_openai(self, diff: str, prompt_template: str) -> List[Dict[str, Any]]:
-        """Analyze code using OpenAI."""
+    def _analyze_with_openai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Analyze code using OpenAI, incorporating CodeRabbit feedback."""
         try:
+            # Build enhanced prompt with CodeRabbit context
             prompt = f"{prompt_template}\n\nCode diff:\n{diff}"
+
+            # Add CodeRabbit context if available
+            if coderabbit_comments and self.config.use_coderabbit:
+                prompt += "\n\n## CodeRabbit Analysis Results\n"
+                prompt += "CodeRabbit has already reviewed this PR. Please consider their feedback and provide additional insights:\n\n"
+
+                for i, comment in enumerate(coderabbit_comments[:5], 1):  # Limit to 5 most relevant
+                    comment_text = comment.get('body', '').strip()
+                    if comment_text:
+                        file_info = ""
+                        if comment.get('path'):
+                            file_info = f" (in {comment['path']}"
+                            if comment.get('line'):
+                                file_info += f" line {comment['line']}"
+                            file_info += ")"
+
+                        prompt += f"{i}. CodeRabbit{file_info}: {comment_text}\n"
+
+                prompt += "\nPlease:\n"
+                prompt += "- Build upon CodeRabbit's analysis\n"
+                prompt += "- Identify any issues CodeRabbit may have missed\n"
+                prompt += "- Provide additional security, performance, or architectural insights\n"
+                prompt += "- Avoid duplicating CodeRabbit's exact findings unless you have additional context\n"
 
             response = self.session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -325,7 +349,7 @@ class APIClient:
                 json={
                     "model": self.config.ai_model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 1000
+                    "max_tokens": 1500  # Increased for more comprehensive analysis
                 }
             )
             response.raise_for_status()
@@ -340,10 +364,34 @@ class APIClient:
             raise APIError(f"OpenAI analysis failed: {e}")
 
     @retry_on_failure(max_retries=3, delay=2.0)
-    def _analyze_with_anthropic(self, diff: str, prompt_template: str) -> List[Dict[str, Any]]:
-        """Analyze code using Anthropic."""
+    def _analyze_with_anthropic(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Analyze code using Anthropic, incorporating CodeRabbit feedback."""
         try:
+            # Build enhanced prompt with CodeRabbit context
             prompt = f"{prompt_template}\n\nCode diff:\n{diff}"
+
+            # Add CodeRabbit context if available
+            if coderabbit_comments and self.config.use_coderabbit:
+                prompt += "\n\n## CodeRabbit Analysis Results\n"
+                prompt += "CodeRabbit has already reviewed this PR. Please consider their feedback and provide additional insights:\n\n"
+
+                for i, comment in enumerate(coderabbit_comments[:5], 1):  # Limit to 5 most relevant
+                    comment_text = comment.get('body', '').strip()
+                    if comment_text:
+                        file_info = ""
+                        if comment.get('path'):
+                            file_info = f" (in {comment['path']}"
+                            if comment.get('line'):
+                                file_info += f" line {comment['line']}"
+                            file_info += ")"
+
+                        prompt += f"{i}. CodeRabbit{file_info}: {comment_text}\n"
+
+                prompt += "\nPlease:\n"
+                prompt += "- Build upon CodeRabbit's analysis\n"
+                prompt += "- Identify any issues CodeRabbit may have missed\n"
+                prompt += "- Provide additional security, performance, or architectural insights\n"
+                prompt += "- Avoid duplicating CodeRabbit's exact findings unless you have additional context\n"
 
             response = self.session.post(
                 "https://api.anthropic.com/v1/messages",
@@ -354,7 +402,7 @@ class APIClient:
                 },
                 json={
                     "model": self.config.ai_model,
-                    "max_tokens": 1000,
+                    "max_tokens": 1500,  # Increased for more comprehensive analysis
                     "messages": [{"role": "user", "content": prompt}]
                 }
             )
@@ -425,11 +473,74 @@ class APIClient:
         return comments
 
     @retry_on_failure(max_retries=3, delay=1.0)
+    def get_coderabbit_comments(self, repo: str, pr_number: str) -> List[Dict[str, Any]]:
+        """Get CodeRabbit comments from the PR."""
+        try:
+            # Get all review comments on the PR
+            response = self.session.get(
+                f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
+                headers={"Authorization": f"token {self.config.github_token}"}
+            )
+            response.raise_for_status()
+            reviews = response.json()
+
+            # Filter for CodeRabbit reviews
+            coderabbit_comments = []
+            for review in reviews:
+                user = review.get('user', {})
+                # CodeRabbit typically uses 'coderabbitai' as username or has 'bot' in the type
+                if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
+                    user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
+
+                    coderabbit_comments.append({
+                        'id': review['id'],
+                        'body': review.get('body', ''),
+                        'state': review.get('state', ''),
+                        'submitted_at': review.get('submitted_at', ''),
+                        'user': user.get('login', 'coderabbit')
+                    })
+
+            # Also get individual review comments (line-specific comments)
+            response = self.session.get(
+                f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments",
+                headers={"Authorization": f"token {self.config.github_token}"}
+            )
+            response.raise_for_status()
+            line_comments = response.json()
+
+            # Filter line comments from CodeRabbit
+            for comment in line_comments:
+                user = comment.get('user', {})
+                if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
+                    user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
+
+                    coderabbit_comments.append({
+                        'id': comment['id'],
+                        'body': comment.get('body', ''),
+                        'path': comment.get('path', ''),
+                        'line': comment.get('line', ''),
+                        'created_at': comment.get('created_at', ''),
+                        'user': user.get('login', 'coderabbit'),
+                        'type': 'line_comment'
+                    })
+
+            logger.info(f"Found {len(coderabbit_comments)} CodeRabbit comments")
+            return coderabbit_comments
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to get CodeRabbit comments: {e}")
+            return []  # Continue without CodeRabbit comments if fetch fails
+
+    @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:
         """Post review comments to GitHub PR."""
         try:
             # Create a structured review comment with severity levels
             review_body = "🤖 **AI Code Review Results**\n\n"
+
+            # Add CodeRabbit integration note if applicable
+            if hasattr(self, '_last_coderabbit_count') and self._last_coderabbit_count > 0:
+                review_body += f"*This analysis incorporates and builds upon {self._last_coderabbit_count} CodeRabbit comments for comprehensive coverage.*\n\n"
 
             # Group comments by severity
             severity_groups = {
@@ -742,7 +853,7 @@ def prompt_review_settings() -> tuple[str, bool]:
     return strictness, auto_request_changes
 
 def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
-    """Review a specific PR using AI."""
+    """Review a specific PR using AI, incorporating CodeRabbit feedback."""
     logger.info(f"Starting AI review for PR #{pr_number} in {repo}")
 
     try:
@@ -756,15 +867,28 @@ def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
         # Get PR diff
         pr_diff = client.get_pr_diff(repo, pr_number)
 
-        # Analyze with AI
-        review_comments = client.analyze_code_with_ai(pr_diff, config.prompt_template)
+        # Get CodeRabbit comments if enabled
+        coderabbit_comments = []
+        if config.use_coderabbit:
+            logger.info("Fetching CodeRabbit comments...")
+            coderabbit_comments = client.get_coderabbit_comments(repo, pr_number)
+            if coderabbit_comments:
+                logger.info(f"Found {len(coderabbit_comments)} CodeRabbit comments to incorporate")
+            else:
+                logger.info("No CodeRabbit comments found - proceeding with standalone AI analysis")
+
+        # Analyze with AI, incorporating CodeRabbit feedback
+        client._last_coderabbit_count = len(coderabbit_comments)  # Track for review posting
+        review_comments = client.analyze_code_with_ai(pr_diff, config.prompt_template, coderabbit_comments)
 
         # Post review comments
         if review_comments:
             client.post_pr_review(repo, pr_number, review_comments)
             logger.info(f"Posted {len(review_comments)} review comments")
+            if coderabbit_comments:
+                logger.info("Review incorporates CodeRabbit analysis for comprehensive coverage")
         else:
-            logger.info("No issues found - PR looks good!")
+            logger.info("No additional issues found beyond CodeRabbit analysis - PR looks good!")
 
     except Exception as e:
         logger.error(f"PR review failed: {e}", exc_info=True)

@@ -341,6 +341,55 @@ class TestPRReview:
         # Check that we have multiple comments
         assert len(comments) >= 3
 
+    @patch('requests.Session.get')
+    def test_get_coderabbit_comments(self, mock_get):
+        """Test fetching CodeRabbit comments from PR."""
+        config = ReviewConfig(
+            github_token="ghp_" + "x" * 40,
+            ai_provider="openai",
+            ai_key="sk-" + "x" * 40,
+            ai_model="gpt-4",
+            repo="owner/repo",
+            use_coderabbit=True
+        )
+        client = APIClient(config)
+
+        # Mock CodeRabbit review comments
+        mock_reviews = [
+            {
+                'id': 1,
+                'body': 'CodeRabbit: Consider using bcrypt for password hashing',
+                'state': 'CHANGES_REQUESTED',
+                'user': {'login': 'coderabbitai', 'type': 'Bot'}
+            }
+        ]
+
+        # Mock CodeRabbit line comments
+        mock_line_comments = [
+            {
+                'id': 2,
+                'body': 'CodeRabbit: SQL injection vulnerability detected',
+                'path': 'auth.py',
+                'line': 15,
+                'user': {'login': 'coderabbitai', 'type': 'Bot'}
+            }
+        ]
+
+        # Setup mock responses
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+
+        # First call returns reviews, second call returns line comments
+        mock_response.json.side_effect = [mock_reviews, mock_line_comments]
+        mock_get.return_value = mock_response
+
+        comments = client.get_coderabbit_comments("owner/repo", "123")
+
+        # Should find both review and line comments
+        assert len(comments) == 2
+        assert any('bcrypt' in comment['body'] for comment in comments)
+        assert any('SQL injection' in comment['body'] for comment in comments)
+
 class TestEnhancedFeatures:
     """Test enhanced features like retry logic and configuration."""
 
