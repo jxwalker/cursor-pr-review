@@ -390,6 +390,38 @@ class TestPRReview:
         assert any('bcrypt' in comment['body'] for comment in comments)
         assert any('SQL injection' in comment['body'] for comment in comments)
 
+    def test_github_ai_prompt_extraction(self):
+        """Test extracting GitHub AI agent prompts from text."""
+        config = ReviewConfig(
+            github_token="ghp_" + "x" * 40,
+            ai_provider="openai",
+            ai_key="sk-" + "x" * 40,
+            ai_model="gpt-4",
+            repo="owner/repo"
+        )
+        client = APIClient(config)
+
+        # Test with AI prompt in PR description
+        pr_body = """
+        ## Summary
+        This PR fixes some issues.
+
+        ## 🤖 Prompt for AI Agents
+        Fix the exception handling by adding 'from e' to preserve context.
+
+        ## Changes
+        - Updated code
+        """
+
+        extracted = client._extract_ai_prompt_from_text(pr_body)
+        assert "Fix the exception handling" in extracted
+        assert "from e" in extracted
+
+        # Test with no AI prompt
+        no_prompt_body = "Just a regular PR description without AI prompts."
+        extracted_empty = client._extract_ai_prompt_from_text(no_prompt_body)
+        assert extracted_empty == ""
+
 class TestEnhancedFeatures:
     """Test enhanced features like retry logic and configuration."""
 

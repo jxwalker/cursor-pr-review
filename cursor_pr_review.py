@@ -304,21 +304,28 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             raise APIError(f"Failed to get PR diff: {e}") from e
 
-    def analyze_code_with_ai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Analyze code diff using AI and return review comments, incorporating CodeRabbit feedback."""
+    def analyze_code_with_ai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
+        """Analyze code diff using AI and return review comments, incorporating all available context."""
         if self.config.ai_provider == 'openai':
-            return self._analyze_with_openai(diff, prompt_template, coderabbit_comments)
+            return self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
         elif self.config.ai_provider == 'anthropic':
-            return self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments)
+            return self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments, github_ai_prompt)
         else:
             raise ConfigError(f"Unknown AI provider: {self.config.ai_provider}")
 
     @retry_on_failure(max_retries=3, delay=2.0)
-    def _analyze_with_openai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Analyze code using OpenAI, incorporating CodeRabbit feedback."""
+    def _analyze_with_openai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
+        """Analyze code using OpenAI, incorporating all available context."""
         try:
-            # Build enhanced prompt with CodeRabbit context
+            # Build enhanced prompt with all available context
             prompt = f"{prompt_template}\n\nCode diff:\n{diff}"
+
+            # Add GitHub AI agent prompt if available
+            if github_ai_prompt:
+                prompt += "\n\n## GitHub AI Agent Analysis\n"
+                prompt += "GitHub has generated the following AI-friendly summary of this PR:\n\n"
+                prompt += f"{github_ai_prompt}\n"
+                prompt += "\nPlease consider this context in your analysis.\n"
 
             # Add CodeRabbit context if available
             if coderabbit_comments and self.config.use_coderabbit:
@@ -342,6 +349,15 @@ class APIClient:
                 prompt += "- Identify any issues CodeRabbit may have missed\n"
                 prompt += "- Provide additional security, performance, or architectural insights\n"
                 prompt += "- Avoid duplicating CodeRabbit's exact findings unless you have additional context\n"
+
+            # Add comprehensive analysis instructions
+            if github_ai_prompt or coderabbit_comments:
+                prompt += "\n\n## Comprehensive Analysis Request\n"
+                prompt += "Given the above context, please provide a thorough analysis that:\n"
+                prompt += "- Addresses any specific issues mentioned in the GitHub AI prompt\n"
+                prompt += "- Complements existing CodeRabbit feedback\n"
+                prompt += "- Identifies patterns or architectural concerns\n"
+                prompt += "- Suggests improvements for code maintainability and reliability\n"
 
             response = self.session.post(
                 "https://api.openai.com/v1/chat/completions",
@@ -364,11 +380,18 @@ class APIClient:
             raise APIError(f"OpenAI analysis failed: {e}") from e
 
     @retry_on_failure(max_retries=3, delay=2.0)
-    def _analyze_with_anthropic(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Analyze code using Anthropic, incorporating CodeRabbit feedback."""
+    def _analyze_with_anthropic(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
+        """Analyze code using Anthropic, incorporating all available context."""
         try:
-            # Build enhanced prompt with CodeRabbit context
+            # Build enhanced prompt with all available context
             prompt = f"{prompt_template}\n\nCode diff:\n{diff}"
+
+            # Add GitHub AI agent prompt if available
+            if github_ai_prompt:
+                prompt += "\n\n## GitHub AI Agent Analysis\n"
+                prompt += "GitHub has generated the following AI-friendly summary of this PR:\n\n"
+                prompt += f"{github_ai_prompt}\n"
+                prompt += "\nPlease consider this context in your analysis.\n"
 
             # Add CodeRabbit context if available
             if coderabbit_comments and self.config.use_coderabbit:
@@ -392,6 +415,15 @@ class APIClient:
                 prompt += "- Identify any issues CodeRabbit may have missed\n"
                 prompt += "- Provide additional security, performance, or architectural insights\n"
                 prompt += "- Avoid duplicating CodeRabbit's exact findings unless you have additional context\n"
+
+            # Add comprehensive analysis instructions
+            if github_ai_prompt or coderabbit_comments:
+                prompt += "\n\n## Comprehensive Analysis Request\n"
+                prompt += "Given the above context, please provide a thorough analysis that:\n"
+                prompt += "- Addresses any specific issues mentioned in the GitHub AI prompt\n"
+                prompt += "- Complements existing CodeRabbit feedback\n"
+                prompt += "- Identifies patterns or architectural concerns\n"
+                prompt += "- Suggests improvements for code maintainability and reliability\n"
 
             response = self.session.post(
                 "https://api.anthropic.com/v1/messages",
@@ -473,6 +505,88 @@ class APIClient:
         return comments
 
     @retry_on_failure(max_retries=3, delay=1.0)
+    def get_github_ai_prompt(self, repo: str, pr_number: str) -> str:
+        """Extract GitHub's AI agent prompt from PR description or comments."""
+        try:
+            # Get PR details to check description
+            response = self.session.get(
+                f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+                headers={"Authorization": f"token {self.config.github_token}"}
+            )
+            response.raise_for_status()
+            pr_data = response.json()
+
+            # Look for AI prompt in PR description
+            pr_body = pr_data.get('body', '')
+            ai_prompt = self._extract_ai_prompt_from_text(pr_body)
+
+            if not ai_prompt:
+                # Check PR comments for AI prompts
+                response = self.session.get(
+                    f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                    headers={"Authorization": f"token {self.config.github_token}"}
+                )
+                response.raise_for_status()
+                comments = response.json()
+
+                for comment in comments:
+                    comment_body = comment.get('body', '')
+                    ai_prompt = self._extract_ai_prompt_from_text(comment_body)
+                    if ai_prompt:
+                        break
+
+            if ai_prompt:
+                logger.info(f"Found GitHub AI agent prompt ({len(ai_prompt)} chars)")
+                return ai_prompt
+            else:
+                logger.info("No GitHub AI agent prompt found")
+                return ""
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Failed to get GitHub AI prompt: {e}")
+            return ""
+
+    def _extract_ai_prompt_from_text(self, text: str) -> str:
+        """Extract AI agent prompt from GitHub text."""
+        if not text:
+            return ""
+
+        # Look for the AI agent prompt section
+        ai_prompt_markers = [
+            "🤖 Prompt for AI Agents",
+            "Prompt for AI Agents",
+            "🤖 **Prompt for AI Agents**",
+            "## 🤖 Prompt for AI Agents",
+            "### 🤖 Prompt for AI Agents"
+        ]
+
+        text_lower = text.lower()
+        for marker in ai_prompt_markers:
+            marker_lower = marker.lower()
+            if marker_lower in text_lower:
+                # Find the start of the AI prompt section
+                start_idx = text_lower.find(marker_lower)
+                if start_idx != -1:
+                    # Extract from marker to end or next major section
+                    prompt_start = start_idx + len(marker)
+                    remaining_text = text[prompt_start:]
+
+                    # Look for end markers (next section or end of text)
+                    end_markers = ['\n##', '\n###', '\n---', '\n\n---']
+                    end_idx = len(remaining_text)
+
+                    for end_marker in end_markers:
+                        marker_pos = remaining_text.find(end_marker)
+                        if marker_pos != -1 and marker_pos < end_idx:
+                            end_idx = marker_pos
+
+                    ai_prompt = remaining_text[:end_idx].strip()
+                    if ai_prompt:
+                        return ai_prompt
+
+        return ""
+
+    @retry_on_failure(max_retries=3, delay=1.0)
     def get_coderabbit_comments(self, repo: str, pr_number: str) -> List[Dict[str, Any]]:
         """Get CodeRabbit comments from the PR."""
         try:
@@ -538,9 +652,15 @@ class APIClient:
             # Create a structured review comment with severity levels
             review_body = "🤖 **AI Code Review Results**\n\n"
 
-            # Add CodeRabbit integration note if applicable
+            # Add integration notes if applicable
+            integration_notes = []
+            if hasattr(self, '_last_github_ai_prompt') and self._last_github_ai_prompt:
+                integration_notes.append("GitHub AI agent prompt")
             if hasattr(self, '_last_coderabbit_count') and self._last_coderabbit_count > 0:
-                review_body += f"*This analysis incorporates and builds upon {self._last_coderabbit_count} CodeRabbit comments for comprehensive coverage.*\n\n"
+                integration_notes.append(f"{self._last_coderabbit_count} CodeRabbit comments")
+
+            if integration_notes:
+                review_body += f"*This analysis incorporates and builds upon: {', '.join(integration_notes)} for comprehensive coverage.*\n\n"
 
             # Group comments by severity
             severity_groups = {
@@ -852,6 +972,118 @@ def prompt_review_settings() -> tuple[str, bool]:
 
     return strictness, auto_request_changes
 
+def self_improve_from_own_prs(config: ReviewConfig) -> None:
+    """Analyze our own PRs to extract improvement insights."""
+    logger.info("🔄 Starting self-improvement analysis from own PRs")
+
+    try:
+        client = APIClient(config)
+
+        # Get recent PRs from our own repository
+        response = client.session.get(
+            f"https://api.github.com/repos/{config.repo}/pulls",
+            headers={"Authorization": f"token {config.github_token}"},
+            params={"state": "all", "per_page": 10, "sort": "updated"}
+        )
+        response.raise_for_status()
+        prs = response.json()
+
+        logger.info(f"Found {len(prs)} recent PRs to analyze for improvement insights")
+
+        improvement_insights = []
+
+        for pr in prs[:5]:  # Analyze last 5 PRs
+            pr_number = pr['number']
+            logger.info(f"Analyzing PR #{pr_number}: {pr['title']}")
+
+            # Get GitHub AI prompt
+            github_ai_prompt = client.get_github_ai_prompt(config.repo, str(pr_number))
+
+            # Get CodeRabbit comments
+            coderabbit_comments = client.get_coderabbit_comments(config.repo, str(pr_number))
+
+            # Get our own AI review comments
+            our_reviews = []
+            try:
+                response = client.session.get(
+                    f"https://api.github.com/repos/{config.repo}/pulls/{pr_number}/reviews",
+                    headers={"Authorization": f"token {config.github_token}"}
+                )
+                response.raise_for_status()
+                reviews = response.json()
+
+                for review in reviews:
+                    if "🤖 **AI Code Review Results**" in review.get('body', ''):
+                        our_reviews.append(review['body'])
+            except:
+                pass
+
+            # Compile insights
+            if github_ai_prompt or coderabbit_comments or our_reviews:
+                insight = {
+                    'pr_number': pr_number,
+                    'title': pr['title'],
+                    'github_ai_prompt': github_ai_prompt,
+                    'coderabbit_count': len(coderabbit_comments),
+                    'our_review_count': len(our_reviews),
+                    'patterns': []
+                }
+
+                # Extract patterns from GitHub AI prompts
+                if github_ai_prompt:
+                    insight['patterns'].append(f"GitHub AI identified: {github_ai_prompt[:100]}...")
+
+                # Extract patterns from CodeRabbit
+                if coderabbit_comments:
+                    common_issues = {}
+                    for comment in coderabbit_comments:
+                        body = comment.get('body', '').lower()
+                        if 'security' in body:
+                            common_issues['security'] = common_issues.get('security', 0) + 1
+                        if 'performance' in body:
+                            common_issues['performance'] = common_issues.get('performance', 0) + 1
+                        if 'error handling' in body:
+                            common_issues['error_handling'] = common_issues.get('error_handling', 0) + 1
+
+                    for issue_type, count in common_issues.items():
+                        insight['patterns'].append(f"CodeRabbit found {count} {issue_type} issues")
+
+                improvement_insights.append(insight)
+
+        # Generate improvement recommendations
+        logger.info("🎯 Generating improvement recommendations...")
+
+        all_patterns = []
+        for insight in improvement_insights:
+            all_patterns.extend(insight['patterns'])
+
+        # Analyze patterns with AI
+        if all_patterns:
+            pattern_analysis = "\n".join(all_patterns)
+            improvement_prompt = f"""
+            Based on the following patterns from our recent PRs and reviews, suggest specific improvements to our AI code review tool:
+
+            {pattern_analysis}
+
+            Please provide:
+            1. Common issues that our tool should better detect
+            2. Improvements to our prompts or analysis logic
+            3. New features that would address recurring problems
+            4. Better integration opportunities with GitHub/CodeRabbit
+            """
+
+            recommendations = client.analyze_code_with_ai("", improvement_prompt)
+
+            logger.info("📋 Self-Improvement Recommendations:")
+            for i, rec in enumerate(recommendations, 1):
+                logger.info(f"{i}. {rec.get('body', '')}")
+
+        logger.info("✅ Self-improvement analysis complete!")
+
+    except Exception as e:
+        logger.error(f"Self-improvement analysis failed: {e}", exc_info=True)
+        raise
+
 def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
     """Review a specific PR using AI, incorporating CodeRabbit feedback."""
     logger.info(f"Starting AI review for PR #{pr_number} in {repo}")
@@ -867,6 +1099,10 @@ def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
         # Get PR diff
         pr_diff = client.get_pr_diff(repo, pr_number)
 
+        # Get GitHub AI agent prompt
+        logger.info("Fetching GitHub AI agent prompt...")
+        github_ai_prompt = client.get_github_ai_prompt(repo, pr_number)
+
         # Get CodeRabbit comments if enabled
         coderabbit_comments = []
         if config.use_coderabbit:
@@ -877,9 +1113,10 @@ def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
             else:
                 logger.info("No CodeRabbit comments found - proceeding with standalone AI analysis")
 
-        # Analyze with AI, incorporating CodeRabbit feedback
+        # Analyze with AI, incorporating all available context
         client._last_coderabbit_count = len(coderabbit_comments)  # Track for review posting
-        review_comments = client.analyze_code_with_ai(pr_diff, config.prompt_template, coderabbit_comments)
+        client._last_github_ai_prompt = bool(github_ai_prompt)  # Track for review posting
+        review_comments = client.analyze_code_with_ai(pr_diff, config.prompt_template, coderabbit_comments, github_ai_prompt)
 
         # Post review comments
         if review_comments:
@@ -975,6 +1212,14 @@ def main():
 
             # Perform PR review
             review_pr(config, repo, pr_number)
+
+        elif command == "self-improve":
+            # Analyze our own repository for self-improvement
+            config = load_config()
+            if not config:
+                raise ConfigError("No configuration found", "Run setup first")
+
+            self_improve_from_own_prs(config)
         else:
             raise ConfigError(f"Unknown command: {command}", "Use 'setup' or 'review-pr'")
     
