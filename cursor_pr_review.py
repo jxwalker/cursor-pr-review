@@ -221,9 +221,9 @@ class APIClient:
                     "Invalid GitHub token",
                     "Get a new token at https://github.com/settings/tokens"
                 )
-            raise APIError(f"GitHub API error: {e}")
+            raise APIError(f"GitHub API error: {e}") from e
         except requests.exceptions.RequestException as e:
-            raise APIError(f"GitHub API connection failed: {e}", "Check internet connection")
+            raise APIError(f"GitHub API connection failed: {e}", "Check internet connection") from e
     
     def validate_ai_key(self) -> Dict[str, Any]:
         """Validate AI API key with provider-specific logic."""
@@ -250,7 +250,7 @@ class APIClient:
                     "Invalid OpenAI API key",
                     "Get a key at https://platform.openai.com/api-keys"
                 )
-            raise APIError(f"OpenAI API error: {e}")
+            raise APIError(f"OpenAI API error: {e}") from e
     
     def _validate_anthropic(self) -> Dict[str, Any]:
         """Validate Anthropic API key."""
@@ -271,7 +271,7 @@ class APIClient:
                     "Invalid Anthropic API key", 
                     "Get a key at https://console.anthropic.com"
                 )
-            raise APIError(f"Anthropic API error: {e}")
+            raise APIError(f"Anthropic API error: {e}") from e
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def get_pr_details(self, repo: str, pr_number: str) -> Dict[str, Any]:
@@ -285,7 +285,7 @@ class APIClient:
             return response.json()
 
         except requests.exceptions.RequestException as e:
-            raise APIError(f"Failed to get PR details: {e}")
+            raise APIError(f"Failed to get PR details: {e}") from e
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def get_pr_diff(self, repo: str, pr_number: str) -> str:
@@ -302,7 +302,7 @@ class APIClient:
             return response.text
 
         except requests.exceptions.RequestException as e:
-            raise APIError(f"Failed to get PR diff: {e}")
+            raise APIError(f"Failed to get PR diff: {e}") from e
 
     def analyze_code_with_ai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Analyze code diff using AI and return review comments, incorporating CodeRabbit feedback."""
@@ -361,7 +361,7 @@ class APIClient:
             return self._parse_ai_analysis(analysis)
 
         except requests.exceptions.RequestException as e:
-            raise APIError(f"OpenAI analysis failed: {e}")
+            raise APIError(f"OpenAI analysis failed: {e}") from e
 
     @retry_on_failure(max_retries=3, delay=2.0)
     def _analyze_with_anthropic(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -415,7 +415,7 @@ class APIClient:
             return self._parse_ai_analysis(analysis)
 
         except requests.exceptions.RequestException as e:
-            raise APIError(f"Anthropic analysis failed: {e}")
+            raise APIError(f"Anthropic analysis failed: {e}") from e
 
     def _parse_ai_analysis(self, analysis: str) -> List[Dict[str, Any]]:
         """Parse AI analysis into structured review comments."""
@@ -608,7 +608,7 @@ class APIClient:
             logger.info(f"Review posted successfully with {len(comments)} comments (event: {event})")
 
         except requests.exceptions.RequestException as e:
-            raise APIError(f"Failed to post review: {e}")
+            raise APIError(f"Failed to post review: {e}") from e
 
 # YAML generation (not string templates)
 def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
