@@ -16,6 +16,7 @@ from dataclasses import dataclass, asdict
 
 import requests
 import yaml
+from functools import wraps
 
 # Production logging 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -43,6 +44,28 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     return logger
 
 logger = setup_logging()
+
+# Retry decorator for API calls
+def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
+    """Decorator to retry API calls on failure."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (requests.exceptions.RequestException, APIError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        wait_time = delay * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"API call failed after {max_retries} attempts: {e}")
+            raise last_exception
+        return wrapper
+    return decorator
 
 # 100% consistent exception hierarchy
 class ReviewError(Exception):
@@ -81,7 +104,23 @@ class ReviewConfig:
     use_coderabbit: bool = True  # Default to True since we're now using it properly
     coderabbit_threshold: str = "medium"  # 'low', 'medium', 'high'
     coderabbit_auto_approve: bool = False
-    prompt_template: str = "Please review this code for bugs, security issues, and style problems."
+    review_strictness: str = "balanced"  # 'strict', 'balanced', 'lenient'
+    auto_request_changes: bool = True  # Automatically request changes for critical issues
+    prompt_template: str = """Please review this code diff carefully and provide detailed feedback. Focus on:
+
+1. **Security Issues**: Look for potential vulnerabilities, unsafe operations, or security anti-patterns
+2. **Bugs & Logic Errors**: Identify potential runtime errors, logic flaws, or edge cases
+3. **Performance Issues**: Spot inefficient algorithms, memory leaks, or performance bottlenecks
+4. **Code Quality**: Check for maintainability, readability, and adherence to best practices
+5. **Testing**: Suggest areas that need better test coverage
+
+For each issue found, please:
+- Clearly describe the problem
+- Explain the potential impact
+- Suggest a specific solution or improvement
+- Indicate the severity level (critical/error/warning/suggestion)
+
+If no significant issues are found, provide positive feedback and any minor suggestions for improvement."""
     
     def validate(self) -> None:
         """Validate all configuration values."""
@@ -163,6 +202,7 @@ class APIClient:
         self.session = requests.Session()
         self.session.timeout = 30
     
+    @retry_on_failure(max_retries=3, delay=1.0)
     def validate_github_token(self) -> Dict[str, Any]:
         """Validate GitHub token with proper error handling."""
         try:
@@ -233,6 +273,7 @@ class APIClient:
                 )
             raise APIError(f"Anthropic API error: {e}")
 
+    @retry_on_failure(max_retries=3, delay=1.0)
     def get_pr_details(self, repo: str, pr_number: str) -> Dict[str, Any]:
         """Get PR details from GitHub API."""
         try:
@@ -246,6 +287,7 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             raise APIError(f"Failed to get PR details: {e}")
 
+    @retry_on_failure(max_retries=3, delay=1.0)
     def get_pr_diff(self, repo: str, pr_number: str) -> str:
         """Get PR diff from GitHub API."""
         try:
@@ -271,6 +313,7 @@ class APIClient:
         else:
             raise ConfigError(f"Unknown AI provider: {self.config.ai_provider}")
 
+    @retry_on_failure(max_retries=3, delay=2.0)
     def _analyze_with_openai(self, diff: str, prompt_template: str) -> List[Dict[str, Any]]:
         """Analyze code using OpenAI."""
         try:
@@ -296,6 +339,7 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             raise APIError(f"OpenAI analysis failed: {e}")
 
+    @retry_on_failure(max_retries=3, delay=2.0)
     def _analyze_with_anthropic(self, diff: str, prompt_template: str) -> List[Dict[str, Any]]:
         """Analyze code using Anthropic."""
         try:
@@ -329,37 +373,128 @@ class APIClient:
         """Parse AI analysis into structured review comments."""
         comments = []
 
-        # Simple parsing - look for issues mentioned in the analysis
+        # Enhanced parsing - look for various types of issues
         lines = analysis.split('\n')
+        current_comment = ""
+        severity = "info"
+
         for line in lines:
             line = line.strip()
-            if line and ('issue' in line.lower() or 'problem' in line.lower() or 'bug' in line.lower()):
-                comments.append({
-                    'body': line,
-                    'path': None,  # Would need more sophisticated parsing to determine file
-                    'line': None   # Would need more sophisticated parsing to determine line
-                })
+            if not line:
+                if current_comment:
+                    comments.append({
+                        'body': current_comment.strip(),
+                        'severity': severity,
+                        'path': None,
+                        'line': None
+                    })
+                    current_comment = ""
+                    severity = "info"
+                continue
+
+            # Detect severity levels
+            if any(word in line.lower() for word in ['critical', 'severe', 'security', 'vulnerability']):
+                severity = "critical"
+            elif any(word in line.lower() for word in ['error', 'bug', 'issue', 'problem']):
+                severity = "error"
+            elif any(word in line.lower() for word in ['warning', 'potential', 'consider']):
+                severity = "warning"
+            elif any(word in line.lower() for word in ['suggestion', 'improve', 'optimize']):
+                severity = "suggestion"
+
+            # Look for actionable feedback
+            if any(keyword in line.lower() for keyword in [
+                'issue', 'problem', 'bug', 'error', 'warning', 'critical',
+                'security', 'vulnerability', 'consider', 'suggestion',
+                'improve', 'optimize', 'refactor', 'performance'
+            ]):
+                if current_comment:
+                    current_comment += " " + line
+                else:
+                    current_comment = line
+
+        # Add final comment if exists
+        if current_comment:
+            comments.append({
+                'body': current_comment.strip(),
+                'severity': severity,
+                'path': None,
+                'line': None
+            })
 
         return comments
 
+    @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:
         """Post review comments to GitHub PR."""
         try:
-            # Create a general review comment
-            review_body = "AI Code Review Results:\n\n"
-            for i, comment in enumerate(comments, 1):
-                review_body += f"{i}. {comment['body']}\n"
+            # Create a structured review comment with severity levels
+            review_body = "🤖 **AI Code Review Results**\n\n"
+
+            # Group comments by severity
+            severity_groups = {
+                'critical': [],
+                'error': [],
+                'warning': [],
+                'suggestion': [],
+                'info': []
+            }
+
+            for comment in comments:
+                severity = comment.get('severity', 'info')
+                severity_groups[severity].append(comment)
+
+            # Add severity sections
+            severity_icons = {
+                'critical': '🚨',
+                'error': '❌',
+                'warning': '⚠️',
+                'suggestion': '💡',
+                'info': 'ℹ️'
+            }
+
+            for severity, group_comments in severity_groups.items():
+                if group_comments:
+                    icon = severity_icons.get(severity, 'ℹ️')
+                    review_body += f"\n## {icon} {severity.title()} Issues\n\n"
+                    for i, comment in enumerate(group_comments, 1):
+                        review_body += f"{i}. {comment['body']}\n"
+
+            # Determine review event based on severity and configuration
+            has_critical = bool(severity_groups['critical'])
+            has_errors = bool(severity_groups['error'])
+            has_warnings = bool(severity_groups['warning'])
+
+            # Apply strictness settings
+            should_request_changes = False
+            if self.config.auto_request_changes:
+                if self.config.review_strictness == "strict":
+                    should_request_changes = has_critical or has_errors or has_warnings
+                elif self.config.review_strictness == "balanced":
+                    should_request_changes = has_critical or has_errors
+                elif self.config.review_strictness == "lenient":
+                    should_request_changes = has_critical
+
+            if should_request_changes:
+                event = "REQUEST_CHANGES"
+                review_body += "\n---\n⚠️ **This PR has issues that should be addressed before merging.**"
+            else:
+                event = "COMMENT"
+                if has_critical or has_errors:
+                    review_body += "\n---\n⚠️ **Issues found but not blocking merge based on current settings.**"
+                else:
+                    review_body += "\n---\n✅ **No critical issues found. Consider addressing suggestions for code quality.**"
 
             response = self.session.post(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
                 headers={"Authorization": f"token {self.config.github_token}"},
                 json={
                     "body": review_body,
-                    "event": "COMMENT"
+                    "event": event
                 }
             )
             response.raise_for_status()
-            logger.info("Review posted successfully")
+            logger.info(f"Review posted successfully with {len(comments)} comments (event: {event})")
 
         except requests.exceptions.RequestException as e:
             raise APIError(f"Failed to post review: {e}")
@@ -587,6 +722,25 @@ def prompt_coderabbit_setup() -> tuple[str, bool]:
     
     return threshold, auto_approve
 
+def prompt_review_settings() -> tuple[str, bool]:
+    """Setup AI review strictness settings."""
+    logger.info("AI Review Configuration")
+
+    strictness = input("Review strictness (strict/balanced/lenient) [balanced]: ").strip().lower()
+    if not strictness:
+        strictness = "balanced"
+
+    if strictness not in ['strict', 'balanced', 'lenient']:
+        raise ConfigError(f"Invalid strictness: {strictness}", "Use 'strict', 'balanced', or 'lenient'")
+
+    auto_request = input("Auto-request changes for issues? (y/n) [y]: ").strip().lower()
+    auto_request_changes = auto_request != 'n'
+
+    logger.info(f"Review strictness: {strictness}")
+    logger.info(f"Auto-request changes: {'Yes' if auto_request_changes else 'No'}")
+
+    return strictness, auto_request_changes
+
 def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
     """Review a specific PR using AI."""
     logger.info(f"Starting AI review for PR #{pr_number} in {repo}")
@@ -629,7 +783,10 @@ def setup() -> None:
         
         # CodeRabbit is now integrated properly
         coderabbit_threshold, coderabbit_auto_approve = prompt_coderabbit_setup()
-        
+
+        # AI Review settings
+        review_strictness, auto_request_changes = prompt_review_settings()
+
         # Create and validate config
         config = ReviewConfig(
             github_token=github_token,
@@ -639,7 +796,9 @@ def setup() -> None:
             repo=repo,
             use_coderabbit=True,
             coderabbit_threshold=coderabbit_threshold,
-            coderabbit_auto_approve=coderabbit_auto_approve
+            coderabbit_auto_approve=coderabbit_auto_approve,
+            review_strictness=review_strictness,
+            auto_request_changes=auto_request_changes
         )
         
         # Validate tokens and get model

@@ -307,6 +307,61 @@ class TestPRReview:
         assert "diff --git" in diff
         assert "+added line" in diff
 
+    def test_parse_ai_analysis_with_severity(self):
+        """Test parsing AI analysis with severity detection."""
+        config = ReviewConfig(
+            github_token="ghp_" + "x" * 40,
+            ai_provider="openai",
+            ai_key="sk-" + "x" * 40,
+            ai_model="gpt-4",
+            repo="owner/repo"
+        )
+        client = APIClient(config)
+
+        analysis = """
+        Critical security vulnerability found in authentication logic.
+
+        This is a potential bug that could cause runtime errors.
+
+        Warning: Consider improving error handling here.
+
+        Suggestion: You might want to optimize this loop for better performance.
+        """
+
+        comments = client._parse_ai_analysis(analysis)
+
+        # Should find comments with different severities
+        assert len(comments) > 0
+
+        # Check that severities are detected
+        severities = [comment.get('severity', 'info') for comment in comments]
+        assert 'critical' in severities
+        assert 'suggestion' in severities
+
+        # Check that we have multiple comments
+        assert len(comments) >= 3
+
+class TestEnhancedFeatures:
+    """Test enhanced features like retry logic and configuration."""
+
+    def test_review_config_with_new_fields(self):
+        """Test ReviewConfig with new enhanced fields."""
+        config = ReviewConfig(
+            github_token="ghp_" + "x" * 40,
+            ai_provider="openai",
+            ai_key="sk-" + "x" * 40,
+            ai_model="gpt-4",
+            repo="owner/repo",
+            review_strictness="strict",
+            auto_request_changes=True
+        )
+
+        assert config.review_strictness == "strict"
+        assert config.auto_request_changes is True
+
+        # Test validation still works
+        config.validate()
+
 # TODO: Add CodeRabbit tests once the functions are properly exported
 
 def test_main_shows_usage():
