@@ -919,7 +919,16 @@ def choose_ai_model(client: APIClient) -> str:
     models_data = client.validate_ai_key()
     
     if client.config.ai_provider == 'openai':
-        models = [m for m in models_data['data'] if 'gpt' in m['id'].lower()]
+        # Filter for text generation models, exclude unwanted types
+        excluded_keywords = ['audio', 'image', 'tts', 'realtime', 'whisper', 'dall-e', 'legacy', 'deprecated']
+        models = []
+        for m in models_data['data']:
+            model_id = m['id'].lower()
+            if 'gpt' in model_id:
+                # Exclude models with unwanted keywords
+                if not any(keyword in model_id for keyword in excluded_keywords):
+                    models.append(m)
+
         models = sorted(models, key=lambda x: x.get('created', 0), reverse=True)[:5]
     else:
         models = models_data.get('data', [])[:5]
