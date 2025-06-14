@@ -494,6 +494,12 @@ def create_config_from_env(repo: str) -> Optional[ReviewConfig]:
             logger.error("Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY found")
             return None
         
+        # Get optional configuration from environment
+        prompt_type = os.getenv('REVIEW_PROMPT_TYPE', 'default')
+        review_strictness = os.getenv('REVIEW_STRICTNESS', 'balanced')
+        coderabbit_threshold = os.getenv('CODERABBIT_THRESHOLD', 'medium')
+        auto_request_changes = os.getenv('AUTO_REQUEST_CHANGES', 'true').lower() == 'true'
+        
         # Create config with defaults suitable for GitHub Actions
         config = ReviewConfig(
             github_token=github_token,
@@ -502,21 +508,29 @@ def create_config_from_env(repo: str) -> Optional[ReviewConfig]:
             ai_model=ai_model,
             repo=repo,
             use_coderabbit=True,
-            coderabbit_threshold="medium",
+            coderabbit_threshold=coderabbit_threshold,
             coderabbit_auto_approve=False,
-            review_strictness="balanced",
-            auto_request_changes=True,
-            prompt_type="default"
+            review_strictness=review_strictness,
+            auto_request_changes=auto_request_changes,
+            prompt_type=prompt_type
         )
         
         # Load the appropriate prompt template
-        config.prompt_template = load_prompt_template(config.prompt_type)
+        # Check for custom prompt in environment first
+        custom_prompt = os.getenv('REVIEW_PROMPT_TEMPLATE')
+        if custom_prompt:
+            config.prompt_template = custom_prompt
+            logger.info("Using custom prompt from REVIEW_PROMPT_TEMPLATE environment variable")
+        else:
+            config.prompt_template = load_prompt_template(config.prompt_type)
+            logger.info(f"Using prompt type: {config.prompt_type}")
         
         # Validate the config
         config.validate()
         
         logger.info(f"✅ Configuration created from environment variables")
         logger.info(f"🤖 Using {ai_provider} with model {ai_model}")
+        logger.info(f"📝 Review strictness: {review_strictness}")
         
         return config
         
@@ -2052,7 +2066,7 @@ def main():
             logger.info("Cursor PR Review - Production Ready")
             logger.info("Usage:")
             logger.info("  python cursor_pr_review.py setup")
-            logger.info("  python cursor_pr_review.py review-pr owner/repo 123")
+            logger.info("  python cursor_pr_review.py review-pr owner/repo 123 [--prompt PROMPT_NAME] [--prompt-id ID]")
             logger.info("  python cursor_pr_review.py list-prompts")
             logger.info("  python cursor_pr_review.py view-prompt <name>")
             logger.info("  python cursor_pr_review.py edit-prompt [custom]")
@@ -2076,10 +2090,24 @@ def main():
             setup()
         elif command == "review-pr":
             if len(sys.argv) < 4:
-                raise ConfigError("Usage: review-pr owner/repo PR_NUMBER")
+                raise ConfigError("Usage: review-pr owner/repo PR_NUMBER [--prompt PROMPT_NAME] [--prompt-id PROMPT_ID]")
 
             repo = sys.argv[2]
             pr_number = sys.argv[3]
+            
+            # Parse optional arguments
+            prompt_name = None
+            prompt_id = None
+            i = 4
+            while i < len(sys.argv):
+                if sys.argv[i] == "--prompt" and i + 1 < len(sys.argv):
+                    prompt_name = sys.argv[i + 1]
+                    i += 2
+                elif sys.argv[i] == "--prompt-id" and i + 1 < len(sys.argv):
+                    prompt_id = sys.argv[i + 1]
+                    i += 2
+                else:
+                    raise ConfigError(f"Unknown option: {sys.argv[i]}", "Use --prompt or --prompt-id")
 
             # Load configuration (try local first, then environment)
             config = load_config()
@@ -2088,6 +2116,43 @@ def main():
                 config = create_config_from_env(repo)
                 if not config:
                     raise ConfigError("No configuration found", "Run setup first or set environment variables")
+
+            # Override prompt if specified
+            if prompt_name or prompt_id:
+                prompt_template = None
+                
+                if prompt_name:
+                    # Load prompt by name (built-in prompts or from file)
+                    if prompt_name == "brutal":
+                        # Special handling for brutal prompt
+                        brutal_path = Path("docs/brutalprompt.md")
+                        if not brutal_path.exists():
+                            brutal_path = Path.home() / ".cursor-pr-review" / "prompts" / "brutal.txt"
+                        if brutal_path.exists():
+                            with open(brutal_path, 'r') as f:
+                                prompt_template = f.read()
+                        else:
+                            raise ConfigError(f"Brutal prompt not found", "Check docs/brutalprompt.md")
+                    else:
+                        # Try to load built-in or custom prompt
+                        prompt_template = load_prompt_template(prompt_name)
+                
+                elif prompt_id and PROMPT_MANAGER_AVAILABLE:
+                    # Load prompt by ID from prompt manager
+                    try:
+                        from prompt_manager import PromptManager
+                        pm = PromptManager()
+                        metadata = pm.get_prompt(prompt_id)
+                        if metadata:
+                            prompt_template = metadata.get_current_content()
+                        else:
+                            raise ConfigError(f"Prompt with ID '{prompt_id}' not found")
+                    except Exception as e:
+                        raise ConfigError(f"Failed to load prompt: {e}")
+                
+                if prompt_template:
+                    config.prompt_template = prompt_template
+                    logger.info(f"Using custom prompt: {prompt_name or prompt_id}")
 
             # Perform PR review
             review_pr(config, repo, pr_number)
