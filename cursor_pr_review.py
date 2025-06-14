@@ -269,9 +269,16 @@ Only report real issues. Be concise. Here's the code to review:
         if not issues:
             return
             
-        # Get latest commit
-        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         headers = {"Authorization": f"token {self.github_token}"}
+        
+        # Check if running in GitHub Actions
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            # Post as issue comment instead of review (GitHub Actions limitation)
+            self._post_as_issue_comment(repo, pr_number, issues, headers)
+            return
+            
+        # Normal review posting for local runs
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
@@ -309,10 +316,43 @@ Only report real issues. Be concise. Here's the code to review:
             print(f"❌ Failed to post review: {response.status_code}")
             print(response.json())
             
+    def _post_as_issue_comment(self, repo: str, pr_number: int, issues: List[Dict[str, Any]], headers: Dict[str, str]) -> None:
+        """Post review as issue comment (for GitHub Actions)."""
+        # Build comment body
+        body = "# 🤖 AI Code Review\n\n"
+        body += f"Found {len(issues)} issue(s) in this PR:\n\n"
+        
+        for i, issue in enumerate(issues, 1):
+            body += f"## {i}. {issue['path']}:{issue['line']}\n"
+            body += f"{issue['body']}\n\n"
+            body += "---\n\n"
+            
+        # Post comment
+        comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+        response = requests.post(comment_url, headers=headers, json={'body': body})
+        
+        if response.status_code == 201:
+            print(f"✅ Posted review as comment with {len(issues)} issues")
+        else:
+            print(f"❌ Failed to post comment: {response.status_code}")
+            print(response.json())
+            
     def _post_approval(self, repo: str, pr_number: int) -> None:
         """Post approval when no issues found."""
-        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         headers = {"Authorization": f"token {self.github_token}"}
+        
+        # Check if running in GitHub Actions
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            # Post as comment (can't approve from Actions)
+            comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
+            body = "# ✅ AI Code Review\n\nNo issues found! This code looks good to merge. 🚀"
+            response = requests.post(comment_url, headers=headers, json={'body': body})
+            if response.status_code == 201:
+                print("✅ Posted approval comment")
+            return
+            
+        # Normal approval for local runs
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
