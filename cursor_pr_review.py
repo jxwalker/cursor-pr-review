@@ -1102,6 +1102,23 @@ class APIClient:
             # First, group similar issues together
             grouped_issues = self._group_similar_issues(analysis_report)
             
+            # Filter out groups with only unknown locations or only test/example files
+            filtered_groups = []
+            for group in grouped_issues:
+                # Get valid issues (with known locations and not in test/example files)
+                valid_issues = [
+                    issue for issue in group['issues']
+                    if issue.get('location') and issue['location'] != 'unknown'
+                    and not self._is_test_or_example_file(issue.get('location', ''))
+                ]
+                
+                # If we have valid issues, update the group
+                if valid_issues:
+                    group['issues'] = valid_issues
+                    filtered_groups.append(group)
+            
+            grouped_issues = filtered_groups
+            
             # Create comments for grouped issues
             for group in grouped_issues:
                 if len(group['issues']) > 3:  # Consolidate if more than 3 similar issues
@@ -1121,13 +1138,21 @@ class APIClient:
                 else:
                     # For small groups, create individual comments
                     for issue in group['issues']:
+                        # Skip issues with unknown locations or in test/example files
+                        location = issue.get('location', 'unknown')
+                        if location == 'unknown' or not location:
+                            continue
+                        
+                        if self._is_test_or_example_file(location):
+                            continue
+                            
                         comment_body = self._format_issue_as_comment(issue, group['section_name'])
                         
                         comments.append({
                             'body': comment_body,
                             'severity': issue.get('severity', 'info'),
-                            'path': self._extract_path_from_location(issue.get('location', '')),
-                            'line': self._extract_line_from_location(issue.get('location', '')),
+                            'path': self._extract_path_from_location(location),
+                            'line': self._extract_line_from_location(location),
                             'sources': issue.get('sources', []),
                             'type': 'actionable_comment',
                             'user': f"{self.config.ai_provider}_ai"
@@ -1417,6 +1442,41 @@ Steps:
 4. Ensure consistency across all changes
 
 Review each occurrence and apply the appropriate fix."""
+    
+    def _is_test_or_example_file(self, location: str) -> bool:
+        """Check if the location is in a test file or example/documentation."""
+        if not location:
+            return False
+            
+        location_lower = location.lower()
+        
+        # Test file indicators
+        test_indicators = [
+            'test_', '_test.py', '/test/', '/tests/', 
+            'spec_', '_spec.py', '/spec/', '/specs/',
+            'pytest', 'unittest', 'conftest.py',
+            'test.py', 'tests.py', '_test_', 'test/',
+            'demo.py', '_demo.py', 'example.py', '_example.py'
+        ]
+        
+        # Documentation and example file indicators
+        doc_indicators = [
+            'enhanced_review_formatter.py',  # This file contains example code
+            'formatter.py', 'template', 'prompt', 'example', 'sample',
+            'documentation', 'docs/', 'readme', 'guide',
+            'tutorial', 'demo', '_demo', 'mock', 'stub',
+            'fixture', 'fake_'
+        ]
+        
+        # Check if it's a test file
+        if any(indicator in location_lower for indicator in test_indicators):
+            return True
+            
+        # Check if it's documentation/example
+        if any(indicator in location_lower for indicator in doc_indicators):
+            return True
+            
+        return False
     
     def _format_issue_as_comment(self, issue: Dict[str, Any], section_name: str) -> str:
         """Format a single issue as a detailed comment."""
