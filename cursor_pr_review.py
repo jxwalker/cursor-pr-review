@@ -1243,8 +1243,14 @@ class APIClient:
             coderabbit_comments = []
             for review in reviews:
                 user = review.get('user', {})
-                if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
-                    user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
+                body = review.get('body', '')
+                # Check if this is a CodeRabbit review (can be posted by github-actions or coderabbitai)
+                is_coderabbit = (
+                    user.get('login', '').lower() in ['coderabbitai', 'coderabbit', 'github-actions'] and
+                    ('CodeRabbit' in body or 'coderabbit' in body.lower() or 
+                     'Actionable comments posted' in body or '🐰' in body)
+                )
+                if is_coderabbit:
                     coderabbit_comments.append({
                         'id': review['id'],
                         'body': review.get('body', ''),
@@ -1261,8 +1267,14 @@ class APIClient:
             line_comments = response.json()
             for comment in line_comments:
                 user = comment.get('user', {})
-                if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
-                    user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
+                body = comment.get('body', '')
+                # Check if this is a CodeRabbit comment (can be posted by github-actions or coderabbitai)
+                is_coderabbit = (
+                    user.get('login', '').lower() in ['coderabbitai', 'coderabbit', 'github-actions'] and
+                    ('CodeRabbit' in body or 'coderabbit' in body.lower() or 
+                     'Actionable comments' in body or '🐰' in body)
+                )
+                if is_coderabbit:
                     coderabbit_comments.append({
                         'id': comment['id'],
                         'body': comment.get('body', ''),
@@ -1272,11 +1284,85 @@ class APIClient:
                         'user': user.get('login', 'coderabbit'),
                         'type': 'line_comment'
                     })
-            logger.info(f"Found {len(coderabbit_comments)} CodeRabbit comments")
-            return coderabbit_comments
+            # Parse CodeRabbit reviews to extract actionable comments
+            parsed_comments = []
+            for comment in coderabbit_comments:
+                if 'Actionable comments posted' in comment.get('body', ''):
+                    # This is a CodeRabbit review with actionable items
+                    extracted = self._parse_coderabbit_review(comment['body'])
+                    parsed_comments.extend(extracted)
+                else:
+                    # Regular comment, keep as is
+                    parsed_comments.append(comment)
+            
+            logger.info(f"Found {len(parsed_comments)} CodeRabbit comments")
+            return parsed_comments
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to get CodeRabbit comments: {e}")
             return []
+    
+    def _parse_coderabbit_review(self, review_body: str) -> List[Dict[str, Any]]:
+        """Parse a CodeRabbit review to extract individual actionable comments."""
+        parsed_comments = []
+        
+        # Split the review into sections
+        lines = review_body.split('\n')
+        current_file = None
+        current_location = None
+        current_comment = []
+        in_code_block = False
+        
+        for line in lines:
+            # Check for file section headers like "cursor_pr_review.py (3)"
+            file_match = re.match(r'^([a-zA-Z0-9_/.-]+\.py)\s*\(\d+\)', line)
+            if file_match:
+                current_file = file_match.group(1)
+                continue
+            
+            # Check for location markers like "`307-315`:"
+            location_match = re.match(r'^`(\d+(?:-\d+)?)`:\s*\*\*(.*?)\*\*', line)
+            if location_match:
+                # Save previous comment if exists
+                if current_comment and current_location:
+                    comment_body = '\n'.join(current_comment).strip()
+                    if comment_body:
+                        parsed_comments.append({
+                            'body': comment_body,
+                            'path': current_file,
+                            'line': current_location,
+                            'user': 'coderabbitai',
+                            'type': 'actionable_comment'
+                        })
+                
+                # Start new comment
+                current_location = location_match.group(1)
+                current_comment = [location_match.group(2)]  # Start with the title
+                continue
+            
+            # Check for code blocks
+            if '```' in line:
+                in_code_block = not in_code_block
+            
+            # Collect comment lines
+            if current_location and not line.strip().startswith('---'):
+                # Skip tool sections and details
+                if not line.strip().startswith('<details>') and not line.strip().startswith('</details>'):
+                    if not line.strip().startswith('<summary>') and not line.strip().startswith('</summary>'):
+                        current_comment.append(line)
+        
+        # Save last comment
+        if current_comment and current_location:
+            comment_body = '\n'.join(current_comment).strip()
+            if comment_body:
+                parsed_comments.append({
+                    'body': comment_body,
+                    'path': current_file,
+                    'line': current_location,
+                    'user': 'coderabbitai',
+                    'type': 'actionable_comment'
+                })
+        
+        return parsed_comments
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:

@@ -90,6 +90,8 @@ class EnhancedReviewFormatter:
         """Check if comment is from CodeRabbit."""
         return ('CodeRabbit' in body or 
                 'coderabbit' in comment.get('sources', []) or
+                comment.get('user') == 'coderabbitai' or
+                comment.get('type') == 'actionable_comment' or
                 '🐰' in body or
                 'Actionable comments posted' in body)
     
@@ -363,9 +365,49 @@ class EnhancedReviewFormatter:
         if organized['coderabbit_feedback']:
             output.append("## 🐰 CodeRabbit Findings")
             output.append("")
-            for issue in organized['coderabbit_feedback'][:3]:
-                output.append(f"- **{issue['title']}** - {issue['remediation']}")
+            output.append("*These issues were identified by CodeRabbit's automated review:*")
             output.append("")
+            
+            for i, issue in enumerate(organized['coderabbit_feedback'], 1):
+                output.append(f"### {i}. {issue['title']}")
+                if issue.get('location') and issue['location'] != 'Unknown location':
+                    output.append(f"**📍 Location:** `{issue['location']}`")
+                if issue.get('severity'):
+                    output.append(f"**⚠️ Severity:** {issue['severity']}")
+                if issue.get('type'):
+                    output.append(f"**🎯 Type:** {issue['type']}")
+                
+                # Show the full description
+                if issue.get('original_comment'):
+                    # Clean up the comment for display
+                    comment_lines = issue['original_comment'].split('\n')
+                    cleaned_lines = []
+                    for line in comment_lines:
+                        # Skip title line if it's already shown
+                        if line.strip() and not line.strip().startswith(issue['title'][:20]):
+                            cleaned_lines.append(line)
+                    if cleaned_lines:
+                        output.append("")
+                        output.append("**Description:**")
+                        for line in cleaned_lines[:10]:  # Limit to first 10 lines
+                            output.append(line)
+                
+                if issue.get('remediation') and issue['remediation'] != "Review and address as appropriate":
+                    output.append("")
+                    output.append(f"**🔧 Fix:** {issue['remediation']}")
+                
+                if issue.get('code_snippet'):
+                    output.append("")
+                    output.append("**Code:**")
+                    output.append("```")
+                    output.append(issue['code_snippet'])
+                    output.append("```")
+                
+                output.append("")
+            
+            if len(organized['coderabbit_feedback']) > 5:
+                output.append(f"*...and {len(organized['coderabbit_feedback']) - 5} more CodeRabbit findings*")
+                output.append("")
         
         # AI IDE Prompts Section for Production Issues
         production_critical_issues = organized['production_blocking'] + organized['production_security']
