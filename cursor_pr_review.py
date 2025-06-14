@@ -27,6 +27,14 @@ except ImportError:
     PROMPT_MANAGER_AVAILABLE = False
     logger.warning("Advanced prompt management not available")
 
+# Import enhanced issue analysis system
+try:
+    from issue_analyzer import EnhancedReviewAnalyzer, Issue, IssueCategory, IssueSeverity
+    ENHANCED_ANALYSIS_AVAILABLE = True
+except ImportError:
+    ENHANCED_ANALYSIS_AVAILABLE = False
+    logger.warning("Enhanced issue analysis not available")
+
 # Production logging 
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Setup production logging with proper levels."""
@@ -205,22 +213,61 @@ def load_prompt_template(prompt_name: str) -> str:
     return get_default_prompt()
 
 def get_default_prompt() -> str:
-    """Get the default prompt template."""
-    return """Please review this code diff carefully and provide detailed feedback. Focus on:
+    """Get the enhanced default prompt template based on self-improvement recommendations."""
+    return """Please conduct a comprehensive code review with the following structure:
 
-1. **Security Issues**: Look for potential vulnerabilities, unsafe operations, or security anti-patterns
-2. **Bugs & Logic Errors**: Identify potential runtime errors, logic flaws, or edge cases
-3. **Performance Issues**: Spot inefficient algorithms, memory leaks, or performance bottlenecks
-4. **Code Quality**: Check for maintainability, readability, and adherence to best practices
-5. **Testing**: Suggest areas that need better test coverage
+## 1. SECURITY ISSUES
+Identify and detail all security vulnerabilities:
+- Input validation issues (SQL injection, XSS, command injection)
+- Hardcoded secrets and credentials
+- Unsafe function usage (eval, exec, pickle.loads)
+- Cryptographic weaknesses
+- Authentication/authorization flaws
 
-For each issue found, please:
-- Clearly describe the problem
-- Explain the potential impact
-- Suggest a specific solution or improvement
-- Indicate the severity level (critical/error/warning/suggestion)
+For each security issue:
+- **Root Cause**: Explain what makes this vulnerable
+- **Location**: Specify file and line number
+- **Impact**: Describe potential exploitation
+- **Remediation**: Provide specific fix instructions
+- **Severity**: Rate as CRITICAL/ERROR/WARNING
 
-If no significant issues are found, provide positive feedback and any minor suggestions for improvement."""
+## 2. ERROR HANDLING ISSUES
+Analyze error handling patterns:
+- Bare except clauses without exception types
+- Exceptions caught and ignored silently
+- Missing error logging in exception handlers
+- Improper exception propagation
+- Missing validation for external inputs
+
+For each error handling issue:
+- **Root Cause**: Why this is problematic
+- **Location**: File and line number
+- **Remediation**: How to improve error handling
+- **Severity**: Rate as ERROR/WARNING/SUGGESTION
+
+## 3. OTHER ISSUES
+Cover remaining code quality concerns:
+- Performance bottlenecks and inefficient algorithms
+- Code maintainability and readability issues
+- Missing or inadequate test coverage
+- Architectural or design pattern violations
+- Documentation gaps
+
+## SOURCE ATTRIBUTION
+When referencing findings from other tools:
+- **CodeRabbit findings**: Acknowledge and build upon CodeRabbit analysis
+- **GitHub AI findings**: Reference GitHub AI recommendations
+- **Cross-validation**: Note when multiple tools found the same issue
+
+## FORMATTING REQUIREMENTS
+- Use clear headings for each section
+- Provide specific file:line references
+- Include code snippets when relevant
+- Prioritize issues by severity
+- Give actionable remediation steps
+
+If no issues are found in a section, state: "✅ No [category] issues detected"
+"""
 
 def save_custom_prompt(prompt_content: str) -> None:
     """Save custom prompt template."""
@@ -481,13 +528,125 @@ class APIClient:
             raise APIError(f"Failed to get PR diff: {e}") from e
 
     def analyze_code_with_ai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
-        """Analyze code diff using AI and return review comments, incorporating all available context."""
+        """Analyze code diff using enhanced AI analysis with structured output."""
+        # Use enhanced analysis if available
+        if ENHANCED_ANALYSIS_AVAILABLE:
+            return self._analyze_with_enhanced_system(diff, prompt_template, coderabbit_comments, github_ai_prompt)
+        
+        # Fallback to original analysis
         if self.config.ai_provider == 'openai':
             return self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
         elif self.config.ai_provider == 'anthropic':
             return self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments, github_ai_prompt)
         else:
             raise ConfigError(f"Unknown AI provider: {self.config.ai_provider}")
+    
+    def _analyze_with_enhanced_system(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
+        """Enhanced analysis using the new issue analyzer system."""
+        try:
+            analyzer = EnhancedReviewAnalyzer()
+            
+            # Analyze the diff with enhanced detectors
+            analysis_report = analyzer.analyze_diff(diff)
+            
+            # Integrate external tool findings
+            if coderabbit_comments:
+                github_ai_issues = []
+                if github_ai_prompt:
+                    # Parse GitHub AI prompt into issues format
+                    github_ai_issues = [{'body': github_ai_prompt, 'path': None, 'line': None}]
+                
+                analyzer.integrate_external_issues(coderabbit_comments, github_ai_issues)
+                analysis_report = analyzer._generate_structured_report()
+            
+            # Run AI analysis with enhanced prompt
+            ai_comments = []
+            if self.config.ai_provider == 'openai':
+                ai_comments = self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
+            elif self.config.ai_provider == 'anthropic':
+                ai_comments = self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments, github_ai_prompt)
+            
+            # Combine enhanced detection with AI analysis
+            return self._merge_analysis_results(analysis_report, ai_comments)
+        
+        except Exception as e:
+            logger.warning(f"Enhanced analysis failed, falling back to standard analysis: {e}")
+            # Fallback to standard analysis
+            if self.config.ai_provider == 'openai':
+                return self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
+            elif self.config.ai_provider == 'anthropic':
+                return self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments, github_ai_prompt)
+            else:
+                return []
+    
+    def _merge_analysis_results(self, enhanced_report: Dict[str, Any], ai_comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge enhanced detection results with AI analysis."""
+        merged_comments = []
+        
+        # Add structured report as primary comment
+        if enhanced_report['summary']['total_issues'] > 0:
+            structured_comment = self._format_structured_report(enhanced_report)
+            merged_comments.append({
+                'body': structured_comment,
+                'severity': 'info',
+                'path': None,
+                'line': None
+            })
+        
+        # Add AI comments as supplementary analysis
+        for comment in ai_comments:
+            # Avoid duplicate structured reports
+            if 'Enhanced Code Analysis Results' not in comment.get('body', ''):
+                comment['body'] = f"**AI Analysis**: {comment['body']}"
+                merged_comments.append(comment)
+        
+        return merged_comments
+    
+    def _format_structured_report(self, report: Dict[str, Any]) -> str:
+        """Format the structured analysis report for display."""
+        output = ["## 🔍 Enhanced Code Analysis Results"]
+        output.append("")
+        
+        summary = report['summary']
+        output.append(f"**Summary**: {summary['total_issues']} total issues found")
+        output.append(f"• 🔒 Security: {summary['security_issues']} issues")
+        output.append(f"• ⚠️ Error Handling: {summary['error_handling_issues']} issues")
+        output.append(f"• 📋 Other: {summary['other_issues']} issues")
+        output.append("")
+        
+        # Format each section
+        for section_name, section_data in report['sections'].items():
+            if section_data['count'] > 0:
+                output.append(f"### {section_data['title']}")
+                output.append("")
+                
+                for issue in section_data['issues']:
+                    output.append(f"**{issue['severity'].upper()}**: {issue['title']}")
+                    output.append(f"📍 Location: {issue['location']}")
+                    output.append(f"📝 Description: {issue['description']}")
+                    output.append(f"🔧 Remediation: {issue['remediation']}")
+                    
+                    if issue['sources']:
+                        sources_str = ", ".join(issue['sources'])
+                        output.append(f"🔍 Detected by: {sources_str}")
+                    
+                    if issue['code_snippet']:
+                        output.append(f"```\n{issue['code_snippet']}\n```")
+                    
+                    output.append("")
+            else:
+                output.append(f"### {section_data['title']}")
+                output.append(section_data.get('message', f"✅ No issues found"))
+                output.append("")
+        
+        # Add source attribution
+        if report.get('source_attribution'):
+            output.append("### 📊 Analysis Attribution")
+            for source, count in report['source_attribution'].items():
+                output.append(f"• {source}: {count} issues")
+            output.append("")
+        
+        return "\n".join(output)
 
     @retry_on_failure(max_retries=3, delay=2.0)
     def _analyze_with_openai(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
