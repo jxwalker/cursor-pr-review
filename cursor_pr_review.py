@@ -18,6 +18,15 @@ import requests
 import yaml
 from functools import wraps
 
+# Import new prompt management system
+try:
+    from prompt_manager import PromptManager
+    from prompt_cli import PromptCLI
+    PROMPT_MANAGER_AVAILABLE = True
+except ImportError:
+    PROMPT_MANAGER_AVAILABLE = False
+    logger.warning("Advanced prompt management not available")
+
 # Production logging 
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Setup production logging with proper levels."""
@@ -160,7 +169,18 @@ def get_available_prompts() -> List[str]:
     return [f.stem for f in prompt_files] + ['custom']
 
 def load_prompt_template(prompt_name: str) -> str:
-    """Load prompt template from file or return default."""
+    """Load prompt template from file or advanced prompt manager."""
+    # Try advanced prompt manager first
+    if PROMPT_MANAGER_AVAILABLE:
+        try:
+            manager = PromptManager()
+            prompt_metadata = manager.get_prompt(prompt_name)
+            if prompt_metadata and prompt_metadata.is_active:
+                return prompt_metadata.get_current_content()
+        except Exception as e:
+            logger.warning(f"Failed to load from prompt manager: {e}")
+    
+    # Fallback to legacy system
     if prompt_name == 'custom':
         config_dir = Path.home() / '.cursor-pr-review'
         custom_file = config_dir / 'custom_prompt.txt'
@@ -1435,6 +1455,17 @@ def main():
             logger.info("  python cursor_pr_review.py view-prompt <name>")
             logger.info("  python cursor_pr_review.py edit-prompt [custom]")
             logger.info("  python cursor_pr_review.py self-improve")
+            logger.info("")
+            logger.info("Advanced Prompt Management:")
+            logger.info("  python cursor_pr_review.py prompt list [--type TYPE] [--language LANG]")
+            logger.info("  python cursor_pr_review.py prompt view <id> [version]")
+            logger.info("  python cursor_pr_review.py prompt create")
+            logger.info("  python cursor_pr_review.py prompt edit <id>")
+            logger.info("  python cursor_pr_review.py prompt delete <id>")
+            logger.info("  python cursor_pr_review.py prompt history <id>")
+            logger.info("  python cursor_pr_review.py prompt rollback <id> <version>")
+            logger.info("  python cursor_pr_review.py prompt diff <id> <v1> <v2>")
+            logger.info("  python cursor_pr_review.py prompt set-default <type> <lang> <id>")
             return
         
         command = sys.argv[1]
@@ -1479,8 +1510,97 @@ def main():
                     edit_prompt_interactive()
                 else:
                     raise ConfigError(f"Cannot edit built-in prompt '{prompt_name}'", "Use 'edit-prompt custom' or 'edit-prompt' for interactive mode")
+        
+        # Advanced prompt management commands
+        elif command == "prompt":
+            if not PROMPT_MANAGER_AVAILABLE:
+                raise ConfigError("Advanced prompt management not available", "Check prompt_manager.py and prompt_cli.py")
+            
+            if len(sys.argv) < 3:
+                raise ConfigError("Usage: prompt <subcommand> [args...]")
+            
+            subcommand = sys.argv[2]
+            cli = PromptCLI()
+            
+            if subcommand == "list":
+                # prompt list [--type TYPE] [--language LANG] [--include-inactive]
+                prompt_type = None
+                language = None
+                include_inactive = False
+                
+                i = 3
+                while i < len(sys.argv):
+                    if sys.argv[i] == "--type" and i + 1 < len(sys.argv):
+                        prompt_type = sys.argv[i + 1]
+                        i += 2
+                    elif sys.argv[i] == "--language" and i + 1 < len(sys.argv):
+                        language = sys.argv[i + 1]
+                        i += 2
+                    elif sys.argv[i] == "--include-inactive":
+                        include_inactive = True
+                        i += 1
+                    else:
+                        i += 1
+                
+                cli.list_prompts(prompt_type, language, include_inactive)
+            
+            elif subcommand == "view":
+                if len(sys.argv) < 4:
+                    raise ConfigError("Usage: prompt view <id> [version]")
+                prompt_id = sys.argv[3]
+                version = int(sys.argv[4]) if len(sys.argv) > 4 else None
+                cli.view_prompt(prompt_id, version)
+            
+            elif subcommand == "create":
+                cli.create_prompt()
+            
+            elif subcommand == "edit":
+                if len(sys.argv) < 4:
+                    raise ConfigError("Usage: prompt edit <id>")
+                prompt_id = sys.argv[3]
+                cli.edit_prompt(prompt_id)
+            
+            elif subcommand == "delete":
+                if len(sys.argv) < 4:
+                    raise ConfigError("Usage: prompt delete <id>")
+                prompt_id = sys.argv[3]
+                cli.delete_prompt(prompt_id)
+            
+            elif subcommand == "history":
+                if len(sys.argv) < 4:
+                    raise ConfigError("Usage: prompt history <id>")
+                prompt_id = sys.argv[3]
+                cli.show_history(prompt_id)
+            
+            elif subcommand == "rollback":
+                if len(sys.argv) < 5:
+                    raise ConfigError("Usage: prompt rollback <id> <version>")
+                prompt_id = sys.argv[3]
+                version = int(sys.argv[4])
+                cli.rollback_prompt(prompt_id, version)
+            
+            elif subcommand == "diff":
+                if len(sys.argv) < 6:
+                    raise ConfigError("Usage: prompt diff <id> <version1> <version2>")
+                prompt_id = sys.argv[3]
+                version1 = int(sys.argv[4])
+                version2 = int(sys.argv[5])
+                cli.show_diff(prompt_id, version1, version2)
+            
+            elif subcommand == "set-default":
+                if len(sys.argv) < 6:
+                    raise ConfigError("Usage: prompt set-default <type> <language> <id>")
+                prompt_type = sys.argv[3]
+                language = sys.argv[4]
+                prompt_id = sys.argv[5]
+                cli.set_default(prompt_type, language, prompt_id)
+            
+            else:
+                raise ConfigError(f"Unknown prompt subcommand: {subcommand}", 
+                    "Use: list, view, create, edit, delete, history, rollback, diff, set-default")
+        
         else:
-            raise ConfigError(f"Unknown command: {command}", "Use 'setup', 'review-pr', 'list-prompts', 'view-prompt', or 'edit-prompt'")
+            raise ConfigError(f"Unknown command: {command}", "Use 'setup', 'review-pr', 'list-prompts', 'view-prompt', 'edit-prompt', or 'prompt'")
     
     except KeyboardInterrupt:
         logger.info("Interrupted")
