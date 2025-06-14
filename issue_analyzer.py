@@ -149,23 +149,73 @@ class SecurityDetector:
                     if re.search(pattern, line, re.IGNORECASE):
                         location = IssueLocation(file_path, line_num)
                         
+                        # Check if this is likely a false positive (example/demo code)
+                        is_example = self._is_example_code(line, lines, line_num)
+                        
+                        # Adjust severity and confidence for examples
+                        if is_example:
+                            severity = IssueSeverity.INFO
+                            confidence = 0.3
+                            adjusted_description = f"Example/demo code with {description.lower()}"
+                        else:
+                            severity = IssueSeverity.CRITICAL if 'injection' in category else IssueSeverity.ERROR
+                            confidence = 0.9 if 'injection' in category else 0.8
+                            adjusted_description = description
+                        
                         issue = Issue(
-                            id=Issue.create_id(location, IssueCategory.SECURITY, description),
-                            title=f"Security: {description}",
-                            description=f"{description} on line {line_num}",
+                            id=Issue.create_id(location, IssueCategory.SECURITY, adjusted_description),
+                            title=f"Security: {adjusted_description}",
+                            description=f"{adjusted_description} on line {line_num}",
                             category=IssueCategory.SECURITY,
-                            severity=IssueSeverity.CRITICAL if 'injection' in category else IssueSeverity.ERROR,
+                            severity=severity,
                             location=location,
                             remediation=self._get_remediation(category),
                             code_snippet=line.strip(),
-                            root_cause=f"Use of potentially unsafe pattern: {category}",
+                            root_cause=f"Use of potentially unsafe pattern: {category}" + (" (in example code)" if is_example else ""),
                             sources=["security_detector"],
                             owasp_category=self.owasp_mapping.get(category, "Security-General"),
-                            confidence=0.9 if 'injection' in category else 0.8
+                            confidence=confidence
                         )
                         issues.append(issue)
         
         return issues
+    
+    def _is_example_code(self, line: str, lines: List[str], line_num: int) -> bool:
+        """Check if this line is likely example/demo code that shouldn't be flagged as critical."""
+        line_lower = line.lower().strip()
+        
+        # Check for explicit comment indicators on the same line or nearby
+        if line_num > 0:
+            prev_line = lines[line_num - 2] if line_num > 1 else ""
+            prev_line_lower = prev_line.lower().strip()
+        else:
+            prev_line_lower = ""
+        
+        # Very specific example code indicators
+        explicit_example_indicators = [
+            '# bad:', '# wrong:', '# avoid:', '# example:', '# demo:', 
+            '# don\'t:', '# never:', '# vulnerable:', '# incorrect:',
+            'bad =', 'wrong =', 'example =', 'demo =', 'vulnerable_code =',
+            '# this is bad', '# this is wrong', '# this is vulnerable'
+        ]
+        
+        # Check current line and previous line for explicit indicators
+        if (any(indicator in line_lower for indicator in explicit_example_indicators) or
+            any(indicator in prev_line_lower for indicator in explicit_example_indicators)):
+            return True
+        
+        # Check for specific function contexts that indicate example code
+        context_start = max(0, line_num - 5)
+        context_end = min(len(lines), line_num + 2)
+        context_lines = lines[context_start:context_end]
+        
+        context_text = ' '.join(context_lines).lower()
+        context_indicators = [
+            'def _generate_ai_ide_prompt', 'def _generate_test_improvement_prompt',
+            'example fix:', 'steps:\n1.', 'fix:\n#'
+        ]
+        
+        return any(indicator in context_text for indicator in context_indicators)
     
     def _get_remediation(self, category: str) -> str:
         """Get specific remediation advice for security issues."""

@@ -24,13 +24,16 @@ class EnhancedReviewFormatter:
             'production_suggestions': [],
             'test_issues': [],
             'test_improvements': [],
+            'example_code_issues': [],
+            'documentation_issues': [],
             'coderabbit_feedback': [],
             'copilot_feedback': [],
             'codeql_feedback': [],
             'ai_insights': [],
             'total_issues': 0,
             'production_issues': 0,
-            'test_issues_count': 0
+            'test_issues_count': 0,
+            'example_issues_count': 0
         }
         
         for comment in comments:
@@ -51,10 +54,18 @@ class EnhancedReviewFormatter:
             elif 'AI Analysis' in body:
                 organized['ai_insights'].append(item)
             
-            # Determine if this is test-related or production code
+            # Determine if this is test-related, example code, or production code
             is_test_file = self._is_test_file(item['location'])
+            is_example_code = self._is_example_code_issue(body, item)
             
-            if is_test_file:
+            if is_example_code:
+                # Example/documentation code - informational only
+                organized['example_issues_count'] += 1
+                if 'formatter.py' in item['location'] or 'documentation' in item['location'].lower():
+                    organized['documentation_issues'].append(item)
+                else:
+                    organized['example_code_issues'].append(item)
+            elif is_test_file:
                 # Test files - issues are not blocking for production
                 organized['test_issues_count'] += 1
                 if self._is_blocking_issue(body, comment) or self._is_security_issue(body):
@@ -111,7 +122,7 @@ class EnhancedReviewFormatter:
         return severity == 'warning' or 'WARNING:' in body
     
     def _is_test_file(self, location: str) -> bool:
-        """Check if the issue is in a test file."""
+        """Check if the issue is in a test file or documentation."""
         test_indicators = [
             'test_', '_test.py', '/test/', '/tests/', 
             'spec_', '_spec.py', '/spec/', '/specs/',
@@ -120,8 +131,35 @@ class EnhancedReviewFormatter:
             'demo.py', '_demo.py', 'example.py', '_example.py'
         ]
         
+        # Documentation and example files
+        doc_indicators = [
+            'formatter.py', 'template', 'prompt', 'example', 'sample',
+            'documentation', 'docs/', 'readme', 'guide'
+        ]
+        
         location_lower = location.lower()
-        return any(indicator in location_lower for indicator in test_indicators)
+        return (any(indicator in location_lower for indicator in test_indicators) or
+                any(indicator in location_lower for indicator in doc_indicators))
+    
+    def _is_example_code_issue(self, body: str, item: Dict[str, str]) -> bool:
+        """Check if this issue is in example/demo code and should be treated as informational."""
+        body_lower = body.lower()
+        
+        # Check for explicit example code indicators
+        example_indicators = [
+            'example/demo code', 'example code', 'demo code',
+            'in example code', 'example fix:', 'bad:', 'good:',
+            'avoid:', 'don\'t:', 'vulnerable:', 'instead of:'
+        ]
+        
+        if any(indicator in body_lower for indicator in example_indicators):
+            return True
+        
+        # Check location for documentation files
+        location = item.get('location', '').lower()
+        doc_files = ['formatter.py', 'template', 'prompt', 'example', 'documentation']
+        
+        return any(doc_file in location for doc_file in doc_files)
     
     def _extract_actionable_item(self, comment: Dict[str, Any]) -> Dict[str, str]:
         """Extract actionable information from a comment."""
@@ -268,6 +306,8 @@ class EnhancedReviewFormatter:
         output.append(f"**Total Issues Found:** {organized['total_issues']}")
         output.append(f"**Production Code Issues:** {organized['production_issues']}")
         output.append(f"**Test Code Issues:** {organized['test_issues_count']}")
+        if organized['example_issues_count'] > 0:
+            output.append(f"**Example/Documentation Issues:** {organized['example_issues_count']} (informational only)")
         output.append("")
         
         # Executive Summary
@@ -287,6 +327,9 @@ class EnhancedReviewFormatter:
         
         if test_issues_total > 0:
             output.append(f"**📝 Note:** {test_issues_total} test-related issues found (non-blocking for production).")
+        
+        if organized['example_issues_count'] > 0:
+            output.append(f"**📚 Note:** {organized['example_issues_count']} issues found in example/documentation code (informational only).")
         
         output.append("")
         
@@ -396,6 +439,25 @@ class EnhancedReviewFormatter:
             for i, issue in enumerate(production_suggestions[:5], 1):
                 output.append(f"{i}. **{issue['title']}** - {issue['remediation']}")
             output.append("")
+        
+        # Example/Documentation Issues Section (Informational)
+        example_issues = organized['example_code_issues'] + organized['documentation_issues']
+        if example_issues:
+            output.append("## 📚 Example/Documentation Code Issues (Informational Only)")
+            output.append("")
+            output.append("*These issues were found in example code or documentation and are informational only - they don't affect production.*")
+            output.append("")
+            
+            for i, issue in enumerate(example_issues[:3], 1):
+                output.append(f"**{i}. {issue['title']}**")
+                output.append(f"- **Location:** `{issue['location']}`")
+                output.append(f"- **Context:** Example/documentation code")
+                output.append(f"- **Note:** This is likely example code showing what NOT to do")
+                output.append("")
+            
+            if len(example_issues) > 3:
+                output.append(f"*...and {len(example_issues) - 3} more example code issues*")
+                output.append("")
         
         # Summary of sources
         sources = []

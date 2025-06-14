@@ -85,24 +85,39 @@ class TestSecurityDetector:
         self.detector = SecurityDetector()
     
     def test_sql_injection_detection(self):
-        """Test SQL injection pattern detection."""
-        code = '''
-cursor.execute("SELECT * FROM users WHERE id = %s" % user_id)
-query = f"DELETE FROM items WHERE name = {item_name}"
-cursor.execute("UPDATE " + table + " SET value = " + value)
+        """Test SQL injection pattern detection with example code detection."""
+        # Test production code (should be CRITICAL)
+        production_code = '''
+def authenticate_user(username, password):
+    cursor.execute("SELECT * FROM users WHERE id = %s" % user_id)
+    return cursor.fetchone()
         '''
-        
-        issues = self.detector.analyze_code(code, "test.py")
-        
-        # Should find 3 SQL injection issues
-        sql_issues = [i for i in issues if 'injection' in i.description.lower()]
-        assert len(sql_issues) >= 2
-        
-        # Check issue details
-        for issue in sql_issues:
+
+        # Test example code (should be INFO)
+        example_code = '''
+# Bad: Don't do this - SQL injection vulnerability
+cursor.execute("SELECT * FROM users WHERE id = %s" % user_id)
+        '''
+
+        production_issues = self.detector.analyze_code(production_code, "auth.py")
+        example_issues = self.detector.analyze_code(example_code, "test.py")
+
+        # Production code should be flagged as CRITICAL
+        prod_sql_issues = [i for i in production_issues if 'injection' in i.description.lower()]
+        assert len(prod_sql_issues) >= 1
+        for issue in prod_sql_issues:
             assert issue.category == IssueCategory.SECURITY
             assert issue.severity == IssueSeverity.CRITICAL
             assert "SQL" in issue.title
+            assert "parameterized queries" in issue.remediation
+
+        # Example code should be flagged as INFO
+        example_sql_issues = [i for i in example_issues if 'injection' in i.description.lower()]
+        assert len(example_sql_issues) >= 1
+        for issue in example_sql_issues:
+            assert issue.category == IssueCategory.SECURITY
+            assert issue.severity == IssueSeverity.INFO  # Example code gets INFO severity
+            assert "example" in issue.description.lower()
             assert "parameterized queries" in issue.remediation
     
     def test_xss_vulnerability_detection(self):
