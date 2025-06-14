@@ -1084,89 +1084,28 @@ class APIClient:
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:
-        """Post review comments to GitHub PR with clean, actionable output."""
+        """Post review comments to GitHub PR with readable, actionable output."""
         try:
-            # Group comments by severity
-            severity_groups = {
-                'critical': [],
-                'error': [],
-                'warning': [],
-                'suggestion': [],
-                'info': []
-            }
-            for comment in comments:
-                severity = comment.get('severity', 'info')
-                body = comment.get('body', '').strip()
-                # Only include non-empty, unique issues
-                if body and body not in [c['body'] for c in severity_groups[severity]]:
-                    severity_groups[severity].append(comment)
-
-            # Build summary checklist
-            summary = "## 🚦 PR Review Summary\n\n"
-            summary += "**What to fix before merging:**\n"
-            blocking = severity_groups['critical'] + severity_groups['error']
-            if blocking:
-                for c in blocking:
-                    summary += f"- [ ] {c['body'].splitlines()[0]}\n"
-            else:
-                summary += "- [x] No blocking issues found!\n"
-            summary += "\n**What to improve later:**\n"
-            for c in severity_groups['warning'] + severity_groups['suggestion']:
-                summary += f"- [ ] {c['body'].splitlines()[0]}\n"
-            if not (severity_groups['warning'] or severity_groups['suggestion']):
-                summary += "- [x] No suggestions or warnings!\n"
-
-            # Build detailed issues section
-            details = ""
-            severity_icons = {
-                'critical': '🚨',
-                'error': '❌',
-                'warning': '⚠️',
-                'suggestion': '💡',
-                'info': 'ℹ️'
-            }
-            for severity, group_comments in severity_groups.items():
-                if group_comments:
-                    icon = severity_icons.get(severity, 'ℹ️')
-                    details += f"\n### {icon} {severity.title()} Issues\n"
-                    for i, comment in enumerate(group_comments, 1):
-                        body = comment['body'].strip()
-                        suggestion = comment.get('suggestion', 'Please address as appropriate.')
-                        details += f"\n**{i}. {body}**\n"
-                        details += f"- **How to fix:** {suggestion}\n"
-
-            # Build copy-paste instructions for the agent
-            instructions = "---\n## 🤖 Copy-paste instructions for your agent\n\n"
-            if blocking:
-                instructions += "**Please address the following blocking issues before merging:**\n"
-                for c in blocking:
-                    instructions += f"- {c['body'].splitlines()[0]}\n"
-            else:
-                instructions += "No blocking issues. You may merge after reviewing suggestions.\n"
-            if severity_groups['warning'] or severity_groups['suggestion']:
-                instructions += "\n**Suggestions for improvement:**\n"
-                for c in severity_groups['warning'] + severity_groups['suggestion']:
-                    instructions += f"- {c['body'].splitlines()[0]}\n"
-
-            # Compose the full review body
-            review_body = summary + details + "\n" + instructions
-
+            # Import the enhanced formatter
+            from enhanced_review_formatter import EnhancedReviewFormatter
+            
+            # Use enhanced formatter to create readable review
+            formatter = EnhancedReviewFormatter()
+            review_body = formatter.format_review(comments)
+            
             # Log the review body for debugging
-            logger.info(f"Review body to be posted:\n{review_body}")
-
-            # Always use 'COMMENT' for now to avoid 422 errors
-            event = "COMMENT"
+            logger.info(f"Enhanced review body generated ({len(review_body)} chars)")
 
             response = self.session.post(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
                 headers={"Authorization": f"token {self.config.github_token}"},
                 json={
                     "body": review_body,
-                    "event": event
+                    "event": "COMMENT"
                 }
             )
             response.raise_for_status()
-            logger.info(f"Review posted successfully with {len(comments)} comments (event: {event})")
+            logger.info(f"✅ Enhanced consolidated review posted successfully")
 
         except requests.exceptions.RequestException as e:
             raise APIError(f"Failed to post review: {e}") from e
