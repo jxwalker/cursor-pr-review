@@ -1,0 +1,10 @@
+2025-06-14 22:21:40,240 - INFO - Starting AI review for PR #5 in jxwalker/cursor-pr-review
+2025-06-14 22:21:40,548 - INFO - Reviewing PR: Test: Clean Review Demo
+2025-06-14 22:21:40,852 - INFO - Fetching GitHub AI agent prompt...
+2025-06-14 22:21:41,328 - INFO - No GitHub AI agent prompt found
+2025-06-14 22:21:41,328 - INFO - Fetching CodeRabbit comments...
+2025-06-14 22:21:41,757 - INFO - Found 0 CodeRabbit comments
+2025-06-14 22:21:41,757 - INFO - No CodeRabbit comments found - proceeding with standalone AI analysis
+2025-06-14 22:22:15,341 - INFO - Enhanced review body generated (604 chars)
+2025-06-14 22:22:15,994 - INFO - ✅ Enhanced consolidated review posted successfully
+2025-06-14 22:22:15,995 - INFO - Posted 1 review comments
