@@ -271,13 +271,7 @@ Only report real issues. Be concise. Here's the code to review:
             
         headers = {"Authorization": f"token {self.github_token}"}
         
-        # Check if running in GitHub Actions
-        if os.environ.get('GITHUB_ACTIONS') == 'true':
-            # Output to GitHub Actions summary instead (permission limitations)
-            self._output_to_actions_summary(repo, pr_number, issues)
-            return
-            
-        # Normal review posting for local runs
+        # Get PR details
         url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         response = requests.get(url, headers=headers)
         
@@ -352,24 +346,6 @@ Only report real issues. Be concise. Here's the code to review:
     def _post_approval(self, repo: str, pr_number: int) -> None:
         """Post approval when no issues found."""
         headers = {"Authorization": f"token {self.github_token}"}
-        
-        # Check if running in GitHub Actions
-        if os.environ.get('GITHUB_ACTIONS') == 'true':
-            # Output to summary (can't approve from Actions)
-            summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
-            if summary_file:
-                content = "# ✅ AI Code Review\n\n"
-                content += f"**No issues found!** PR #{pr_number} looks good to merge. 🚀\n\n"
-                content += f"[View PR #{pr_number}](https://github.com/{repo}/pull/{pr_number})\n"
-                try:
-                    with open(summary_file, 'a') as f:
-                        f.write(content)
-                    print("✅ Posted approval to Actions summary")
-                except:
-                    pass
-            return
-            
-        # Normal approval for local runs
         url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
         response = requests.get(url, headers=headers)
         

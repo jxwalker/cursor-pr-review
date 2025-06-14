@@ -73,6 +73,12 @@ python cursor_pr_review.py review-pr owner/repo 123 --prompt lenient
 python cursor_pr_review.py review-pr owner/repo 123 --prompt security
 ```
 
+### 4. Set Up Automated Reviews (Optional)
+
+See [SETUP_AUTOMATED_REVIEWS.md](SETUP_AUTOMATED_REVIEWS.md) for GitHub Actions setup.
+
+**Important**: You need a Personal Access Token (PAT) for automated reviews to work.
+
 Push the generated workflow file to your repo. Every new PR will now be automatically reviewed!
 
 ### 4. Manual Review (Optional)
