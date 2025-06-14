@@ -1313,8 +1313,10 @@ class APIClient:
         in_code_block = False
         
         for line in lines:
-            # Check for file section headers like "cursor_pr_review.py (3)"
-            file_match = re.match(r'^([a-zA-Z0-9_/.-]+\.py)\s*\(\d+\)', line)
+            # Check for file section headers in various formats
+            # Format 1: "cursor_pr_review.py (3)"
+            # Format 2: "<summary>cursor_pr_review.py (3)</summary>"
+            file_match = re.match(r'^(?:<summary>)?([a-zA-Z0-9_/.-]+\.(?:py|js|ts|java|go|rb|cpp|c|h|rs))\s*\(\d+\)(?:</summary>)?', line)
             if file_match:
                 current_file = file_match.group(1)
                 continue
