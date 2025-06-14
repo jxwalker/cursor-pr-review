@@ -3,8 +3,9 @@
 Enhanced review formatting for readable, actionable feedback
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import re
+import os
 
 
 class EnhancedReviewFormatter:
@@ -302,221 +303,222 @@ class EnhancedReviewFormatter:
         """Generate a clean, readable consolidated review."""
         output = []
         
-        # Header
-        output.append("# 🤖 AI-Powered Code Review Summary")
-        output.append("")
-        output.append(f"**Total Issues Found:** {organized['total_issues']}")
-        output.append(f"**Production Code Issues:** {organized['production_issues']}")
-        output.append(f"**Test Code Issues:** {organized['test_issues_count']}")
-        if organized['example_issues_count'] > 0:
-            output.append(f"**Example/Documentation Issues:** {organized['example_issues_count']} (informational only)")
+        # Professional header with review mode
+        output.append("# 🎯 AI Code Review")
         output.append("")
         
-        # Executive Summary
-        production_blocking = len(organized['production_blocking'])
-        production_security = len(organized['production_security'])
-        test_issues_total = len(organized['test_issues'])
+        # Get review mode from environment or default
+        review_mode = os.environ.get('REVIEW_PROMPT_TYPE', 'default').upper()
+        mode_descriptions = {
+            'DEFAULT': 'Balanced review focusing on critical issues',
+            'STRICT': 'Thorough analysis with zero tolerance',
+            'LENIENT': 'Focus on major issues only', 
+            'BRUTAL': 'Harsh, honest feedback with no sugar-coating',
+            'SECURITY-FOCUSED': 'Security-first comprehensive analysis'
+        }
         
-        if production_blocking > 0 or production_security > 0:
-            output.append("## 🚨 Production Issues - Action Required")
-            if production_blocking > 0:
-                output.append(f"**{production_blocking} critical production issue(s) must be resolved before merging.**")
-            if production_security > 0:
-                output.append(f"**{production_security} production security issue(s) require immediate attention.**")
+        mode_desc = mode_descriptions.get(review_mode, 'Standard code review')
+        output.append(f"**Review Mode:** `{review_mode}` - {mode_desc}")
+        output.append("")
+        
+        # Quick status summary
+        if organized['production_issues'] == 0:
+            output.append("## ✅ Status: Ready to Merge")
+            output.append("No blocking issues found in production code.")
         else:
-            output.append("## ✅ Production Code Ready")
-            output.append("No critical production issues found! Safe to merge.")
+            blocking_count = len(organized['production_blocking']) + len(organized['production_security'])
+            if blocking_count > 0:
+                output.append(f"## 🛑 Status: {blocking_count} Blocking Issues")
+                output.append("Must fix before merging.")
+            else:
+                output.append("## ⚠️ Status: Minor Issues Found")
+                output.append("Consider fixing before merge.")
         
-        if test_issues_total > 0:
-            output.append(f"**📝 Note:** {test_issues_total} test-related issues found (non-blocking for production).")
+        output.append("")
+        output.append("---")
+        output.append("")
         
-        if organized['example_issues_count'] > 0:
-            output.append(f"**📚 Note:** {organized['example_issues_count']} issues found in example/documentation code (informational only).")
+        # Summary counts in a clean table format
+        output.append("## 📊 Summary")
+        output.append("")
+        output.append("| Category | Count | Action Required |")
+        output.append("|----------|-------|----------------|")
+        
+        if organized['production_blocking']:
+            output.append(f"| 🚨 Critical Issues | {len(organized['production_blocking'])} | **Fix immediately** |")
+        
+        if organized['production_security']:
+            output.append(f"| 🔒 Security Issues | {len(organized['production_security'])} | **Fix before merge** |")
+            
+        if organized['production_warnings']:
+            output.append(f"| ⚠️ Warnings | {len(organized['production_warnings'])} | Consider fixing |")
+            
+        if organized['production_suggestions']:
+            output.append(f"| 💡 Suggestions | {len(organized['production_suggestions'])} | Optional |")
+        
+        if organized['total_issues'] == 0:
+            output.append("| ✅ No issues found | 0 | None |")
         
         output.append("")
         
         # Production Critical Issues Section
         if organized['production_blocking']:
-            output.append("## 🛑 Production Critical Issues (Must Fix Before Merge)")
+            output.append("## 🚨 Critical Issues")
+            output.append("*Must fix these before merging*")
             output.append("")
+            
             for i, issue in enumerate(organized['production_blocking'][:5], 1):
                 output.append(f"### {i}. {issue['title']}")
-                output.append(f"**📍 Location:** `{issue['location']}`")
-                output.append(f"**🎯 Type:** {issue['type']}")
-                output.append(f"**🔧 Fix:** {issue['remediation']}")
-                if issue['code_snippet']:
-                    output.append("**📝 Current Code:**")
-                    output.append(f"```")
+                output.append(f"📍 `{issue['location']}`")
+                output.append("")
+                
+                # Simple, clear problem statement
+                output.append("**Problem:**")
+                output.append(f"> {issue.get('description', issue['title'])}")
+                output.append("")
+                
+                # Show the problematic code if available
+                if issue.get('code_snippet'):
+                    output.append("**Your code:**")
+                    output.append("```python")
                     output.append(issue['code_snippet'])
                     output.append("```")
+                    output.append("")
+                
+                # Clear, actionable fix
+                output.append("**Quick fix:**")
+                output.append(f"> {issue['remediation']}")
+                output.append("")
+                
+                # Add copy-paste IDE prompt in a collapsible section
+                output.append("<details>")
+                output.append("<summary>🤖 <b>Copy this to your AI IDE</b></summary>")
+                output.append("")
+                output.append("```")
+                output.append(self._generate_simple_fix_prompt(issue))
+                output.append("```")
+                output.append("</details>")
+                output.append("")
+                output.append("---")
                 output.append("")
         
         # Production Security Issues Section
         if organized['production_security']:
-            output.append("## 🔒 Production Security Issues")
-            output.append("")
-            for i, issue in enumerate(organized['production_security'][:3], 1):
-                output.append(f"**{i}. {issue['title']}**")
-                output.append(f"- **Location:** `{issue['location']}`")
-                output.append(f"- **Fix:** {issue['remediation']}")
-                output.append("")
-        
-        # Tool-Specific Feedback
-        if organized['coderabbit_feedback']:
-            output.append("## 🐰 CodeRabbit Findings")
-            output.append("")
-            output.append("*These issues were identified by CodeRabbit's automated review:*")
+            output.append("## 🔒 Security Issues")
+            output.append("*Fix before merging to protect your users*")
             output.append("")
             
-            for i, issue in enumerate(organized['coderabbit_feedback'], 1):
+            for i, issue in enumerate(organized['production_security'][:3], 1):
                 output.append(f"### {i}. {issue['title']}")
-                if issue.get('location') and issue['location'] != 'Unknown location':
-                    output.append(f"**📍 Location:** `{issue['location']}`")
-                if issue.get('severity'):
-                    output.append(f"**⚠️ Severity:** {issue['severity']}")
-                if issue.get('type'):
-                    output.append(f"**🎯 Type:** {issue['type']}")
+                output.append(f"📍 `{issue['location']}`")
                 
-                # Show the full description
-                if issue.get('original_comment'):
-                    # Clean up the comment for display
-                    comment_lines = issue['original_comment'].split('\n')
-                    cleaned_lines = []
-                    for line in comment_lines:
-                        # Skip title line if it's already shown
-                        if line.strip() and not line.strip().startswith(issue['title'][:20]):
-                            cleaned_lines.append(line)
-                    if cleaned_lines:
-                        output.append("")
-                        output.append("**Description:**")
-                        for line in cleaned_lines[:10]:  # Limit to first 10 lines
-                            output.append(line)
+                # Add OWASP category if available
+                owasp = self._extract_owasp_category(issue)
+                if owasp:
+                    output.append(f"🛡️ OWASP: {owasp}")
                 
-                if issue.get('remediation') and issue['remediation'] != "Review and address as appropriate":
-                    output.append("")
-                    output.append(f"**🔧 Fix:** {issue['remediation']}")
+                output.append("")
+                output.append("**Quick fix:**")
+                output.append(f"> {issue['remediation']}")
+                output.append("")
                 
                 if issue.get('code_snippet'):
+                    output.append("<details>")
+                    output.append("<summary>View problematic code</summary>")
                     output.append("")
-                    output.append("**Code:**")
-                    output.append("```")
+                    output.append("```python")
                     output.append(issue['code_snippet'])
                     output.append("```")
+                    output.append("</details>")
+                    output.append("")
                 
-                output.append("")
-            
-            if len(organized['coderabbit_feedback']) > 5:
-                output.append(f"*...and {len(organized['coderabbit_feedback']) - 5} more CodeRabbit findings*")
+                output.append("---")
                 output.append("")
         
-        # AI IDE Prompts Section for Production Issues
-        production_critical_issues = organized['production_blocking'] + organized['production_security']
-        if production_critical_issues:
-            output.append("## 🤖 AI IDE Fix Prompts (Production Issues)")
-            output.append("")
-            output.append("**Copy these prompts into your AI IDE (Cursor, GitHub Copilot, etc.) to automatically fix production issues:**")
-            output.append("")
-            
-            # Generate specific prompts for production critical issues
-            if organized['production_blocking']:
-                output.append("### 🚨 Critical Production Fixes")
-                for i, issue in enumerate(organized['production_blocking'][:3], 1):
-                    prompt = self._generate_ai_ide_prompt(issue)
-                    output.append(f"**{i}. {issue['title']}**")
-                    output.append("```")
-                    output.append(prompt)
-                    output.append("```")
-                    output.append("")
-            
-            # Generate prompts for production security issues
-            if organized['production_security']:
-                output.append("### 🔒 Production Security Fixes")
-                for i, issue in enumerate(organized['production_security'][:2], 1):
-                    prompt = self._generate_ai_ide_prompt(issue)
-                    output.append(f"**{i}. {issue['title']}**")
-                    output.append("```")
-                    output.append(prompt)
-                    output.append("```")
-                    output.append("")
-        
-        # Test Issues Section (Non-blocking)
-        if organized['test_issues'] or organized['test_improvements']:
-            output.append("## 🧪 Test Code Issues (Non-blocking for Production)")
-            output.append("")
-            output.append("*These issues are in test files and won't block production deployment, but should be addressed for code quality.*")
+        # Other issues (warnings and suggestions)
+        other_issues = organized['production_warnings'] + organized['production_suggestions']
+        if other_issues:
+            output.append("## 💡 Other Suggestions")
+            output.append("*Nice to fix but not blocking*")
             output.append("")
             
-            if organized['test_issues']:
-                output.append("### 🔧 Test Issues to Address")
-                for i, issue in enumerate(organized['test_issues'][:5], 1):
-                    output.append(f"{i}. **{issue['title']}** (`{issue['location']}`)")
-                    output.append(f"   - Fix: {issue['remediation']}")
+            # Show up to 5 other issues in a compact format
+            for i, issue in enumerate(other_issues[:5], 1):
+                output.append(f"**{i}.** {issue['title']} - `{issue['location']}`")
+                output.append(f"   > {issue['remediation']}")
                 output.append("")
             
-            if organized['test_improvements']:
-                output.append("### 📈 Test Improvements")
-                for i, issue in enumerate(organized['test_improvements'][:3], 1):
-                    output.append(f"{i}. **{issue['title']}** - {issue['remediation']}")
-                output.append("")
-            
-            # AI IDE Prompts for Test Issues
-            test_critical_issues = organized['test_issues'][:2]  # Top 2 test issues
-            if test_critical_issues:
-                output.append("### 🤖 AI IDE Prompts for Test Issues")
-                output.append("*Copy these prompts to improve test code quality:*")
-                output.append("")
-                for i, issue in enumerate(test_critical_issues, 1):
-                    prompt = self._generate_test_improvement_prompt(issue)
-                    output.append(f"**{i}. {issue['title']}**")
-                    output.append("```")
-                    output.append(prompt)
-                    output.append("```")
-                    output.append("")
-        
-        # Production Improvement Suggestions
-        production_suggestions = organized['production_warnings'] + organized['production_suggestions']
-        if production_suggestions:
-            output.append("## 💡 Production Code Improvements")
-            output.append("")
-            for i, issue in enumerate(production_suggestions[:5], 1):
-                output.append(f"{i}. **{issue['title']}** - {issue['remediation']}")
-            output.append("")
-        
-        # Example/Documentation Issues Section (Informational)
-        example_issues = organized['example_code_issues'] + organized['documentation_issues']
-        if example_issues:
-            output.append("## 📚 Example/Documentation Code Issues (Informational Only)")
-            output.append("")
-            output.append("*These issues were found in example code or documentation and are informational only - they don't affect production.*")
-            output.append("")
-            
-            for i, issue in enumerate(example_issues[:3], 1):
-                output.append(f"**{i}. {issue['title']}**")
-                output.append(f"- **Location:** `{issue['location']}`")
-                output.append(f"- **Context:** Example/documentation code")
-                output.append(f"- **Note:** This is likely example code showing what NOT to do")
-                output.append("")
-            
-            if len(example_issues) > 3:
-                output.append(f"*...and {len(example_issues) - 3} more example code issues*")
+            if len(other_issues) > 5:
+                output.append(f"*Plus {len(other_issues) - 5} more suggestions...*")
                 output.append("")
         
-        # Summary of sources
-        sources = []
-        if organized['coderabbit_feedback']:
-            sources.append("🐰 CodeRabbit")
-        if organized['codeql_feedback']:
-            sources.append("🔍 CodeQL")
-        if organized['copilot_feedback']:
-            sources.append("🤖 Copilot")
-        if organized['ai_insights']:
-            sources.append("🧠 Custom AI Analysis")
         
-        if sources:
-            output.append("---")
-            output.append(f"*Analysis by: {', '.join(sources)} and integrated security detectors*")
+        
+        # Clean footer
+        output.append("---")
+        output.append("")
+        output.append("### 💡 Tips")
+        output.append("- Focus on critical and security issues first")
+        output.append("- Use the AI IDE prompts for quick fixes")
+        output.append("- Test your changes after fixing")
+        output.append("")
+        output.append(f"*Powered by Cursor PR Review • Review mode: {review_mode}*")
         
         return '\n'.join(output)
+    
+    def _generate_simple_fix_prompt(self, issue: Dict[str, str]) -> str:
+        """Generate a simple, vibe-coder friendly fix prompt."""
+        location = issue.get('location', 'the file').replace('b/', '')
+        title = issue.get('title', 'the issue')
+        
+        # Very simple, direct prompts based on issue type
+        if 'SQL' in title or 'injection' in title.lower():
+            return f"""Fix SQL injection in {location}
+
+The query uses string formatting which is unsafe.
+Replace with parameterized queries.
+
+Example:
+# Instead of: f"SELECT * FROM users WHERE id = {{user_id}}"
+# Use: "SELECT * FROM users WHERE id = %s", (user_id,)"""
+        
+        elif 'hardcoded' in title.lower() or 'secret' in title.lower():
+            return f"""Remove hardcoded secret in {location}
+
+Move the hardcoded value to an environment variable.
+
+Example:
+# Instead of: api_key = "sk-123456"
+# Use: api_key = os.getenv('API_KEY')"""
+        
+        elif 'error' in title.lower() or 'exception' in title.lower():
+            return f"""Fix error handling in {location}
+
+Add proper exception handling and logging.
+
+Example:
+# Instead of: except: pass
+# Use: except SpecificError as e:
+#          logger.error(f"Failed: {{e}}")"""
+        
+        else:
+            return f"""Fix: {title} in {location}
+
+{issue.get('remediation', 'Apply the recommended fix')}"""
+    
+    def _extract_owasp_category(self, issue: Dict[str, Any]) -> Optional[str]:
+        """Extract OWASP category from issue."""
+        # Check direct field
+        if issue.get('owasp_category'):
+            return issue['owasp_category']
+        
+        # Check in description
+        desc = issue.get('description', '') + issue.get('body', '')
+        owasp_match = re.search(r'(A\d{2}-[A-Za-z-]+)', desc)
+        if owasp_match:
+            return owasp_match.group(1)
+        
+        return None
     
     def _generate_ai_ide_prompt(self, issue: Dict[str, str]) -> str:
         """Generate an AI IDE prompt for fixing a specific issue."""

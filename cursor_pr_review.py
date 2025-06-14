@@ -1244,21 +1244,8 @@ class APIClient:
         }
         emoji = severity_emoji.get(group['severity'], 'ℹ️')
         
-        lines.append(f"{emoji} **{group['title_pattern']} ({len(issues)} occurrences)**")
-        lines.append("")
-        
-        # Category
-        if group['section_name'] == 'security':
-            lines.append(f"**🔒 Security Issue**")
-            # Add OWASP if all issues have the same category
-            owasp_cats = set(issue.get('owasp_category') for issue in issues if issue.get('owasp_category'))
-            if len(owasp_cats) == 1:
-                lines.append(f"**🛡️ OWASP Category:** {owasp_cats.pop()}")
-        elif group['section_name'] == 'error_handling':
-            lines.append(f"**⚠️ Error Handling Issue**")
-        else:
-            lines.append(f"**📋 Code Quality Issue**")
-        
+        lines.append(f"## {emoji} {group['title_pattern']}")
+        lines.append(f"*Found {len(issues)} occurrences of this issue*")
         lines.append("")
         
         # Consolidated locations
@@ -1318,54 +1305,27 @@ class APIClient:
             lines.append(issues[0]['description'])
             lines.append("")
         
-        # Show a few example code snippets (max 3)
-        code_snippets = []
-        for issue in issues[:3]:
-            if issue.get('code_snippet'):
-                location = issue.get('location', 'unknown')
-                code_snippets.append((location, issue['code_snippet']))
-        
-        if code_snippets:
-            lines.append("**Example Code:**")
-            for i, (location, snippet) in enumerate(code_snippets, 1):
-                if i > 1:
-                    lines.append("")
-                lines.append(f"Example {i} ({location}):")
-                lines.append("```")
-                lines.append(snippet)
-                lines.append("```")
-            
-            if len(issues) > 3:
-                lines.append(f"\n*...and {len(issues) - 3} more similar occurrences*")
+        # Show one example
+        if issues[0].get('code_snippet'):
+            lines.append("**Example:**")
+            lines.append("```python")
+            lines.append(issues[0]['code_snippet'])
+            lines.append("```")
             lines.append("")
         
-        # Remediation (same for all)
-        if group['remediation']:
-            lines.append("**🔧 How to Fix:**")
-            lines.append(group['remediation'])
-            lines.append("")
+        # Quick fix
+        lines.append("**Quick fix:**")
+        lines.append(f"> {group.get('remediation', 'Apply the same fix to all occurrences')}")
+        lines.append("")
         
-        # Root cause (if consistent)
-        root_causes = set(issue.get('root_cause', '') for issue in issues if issue.get('root_cause'))
-        if len(root_causes) == 1 and root_causes != {''}:
-            lines.append(f"**Root Cause:** {root_causes.pop()}")
-            lines.append("")
-        
-        # Sources
-        all_sources = set()
-        for issue in issues:
-            all_sources.update(issue.get('sources', []))
-        
-        if all_sources:
-            sources_str = ", ".join(sorted(all_sources))
-            lines.append(f"**🔍 Detected by:** {sources_str}")
-            lines.append("")
-        
-        # AI IDE Prompt for fixing multiple occurrences
-        lines.append("**🤖 AI IDE Fix Prompt:**")
+        # Bulk fix prompt
+        lines.append("<details>")
+        lines.append("<summary>🤖 <b>Fix all occurrences with AI</b></summary>")
+        lines.append("")
         lines.append("```")
         lines.append(self._generate_bulk_fix_prompt(group))
         lines.append("```")
+        lines.append("</details>")
         
         return "\n".join(lines)
     
@@ -1479,7 +1439,7 @@ Review each occurrence and apply the appropriate fix."""
         return False
     
     def _format_issue_as_comment(self, issue: Dict[str, Any], section_name: str) -> str:
-        """Format a single issue as a detailed comment."""
+        """Format a single issue as a clean, actionable comment."""
         lines = []
         
         # Title with severity
@@ -1491,70 +1451,85 @@ Review each occurrence and apply the appropriate fix."""
         }
         emoji = severity_emoji.get(issue.get('severity', 'info'), 'ℹ️')
         
-        lines.append(f"{emoji} **{issue['title']}**")
-        lines.append("")
-        
-        # Category and OWASP mapping
-        if section_name == 'security':
-            lines.append(f"**🔒 Security Issue**")
-            if issue.get('owasp_category'):
-                lines.append(f"**🛡️ OWASP Category:** {issue['owasp_category']}")
-        elif section_name == 'error_handling':
-            lines.append(f"**⚠️ Error Handling Issue**")
-        else:
-            lines.append(f"**📋 Code Quality Issue**")
-        
-        lines.append("")
+        lines.append(f"## {emoji} {issue['title']}")
         
         # Location
         if issue.get('location') and issue['location'] != 'unknown':
-            lines.append(f"**📍 Location:** `{issue['location']}`")
+            lines.append(f"📍 `{issue['location']}`")
         
-        # Description
-        if issue.get('description'):
-            lines.append("")
-            lines.append("**Description:**")
-            lines.append(issue['description'])
+        # Add OWASP for security issues
+        if section_name == 'security' and issue.get('owasp_category'):
+            lines.append(f"🛡️ OWASP: {issue['owasp_category']}")
         
-        # Code snippet
+        lines.append("")
+        
+        # Simple problem statement
+        lines.append("**Problem:**")
+        lines.append(f"> {issue.get('description', issue['title'])}")
+        lines.append("")
+        
+        # Show code if available
         if issue.get('code_snippet'):
-            lines.append("")
-            lines.append("**Problematic Code:**")
-            lines.append("```")
+            lines.append("**Your code:**")
+            lines.append("```python")
             lines.append(issue['code_snippet'])
             lines.append("```")
-        
-        # Remediation
-        if issue.get('remediation'):
             lines.append("")
-            lines.append("**🔧 How to Fix:**")
-            lines.append(issue['remediation'])
         
-        # Root cause
-        if issue.get('root_cause'):
-            lines.append("")
-            lines.append(f"**Root Cause:** {issue['root_cause']}")
-        
-        # Confidence score
-        if issue.get('confidence'):
-            confidence_pct = int(issue['confidence'] * 100)
-            lines.append("")
-            lines.append(f"**📊 Confidence:** {confidence_pct}%")
-        
-        # Sources
-        if issue.get('sources'):
-            sources_str = ", ".join(issue['sources'])
-            lines.append("")
-            lines.append(f"**🔍 Detected by:** {sources_str}")
-        
-        # AI IDE Prompt
+        # Quick fix
+        lines.append("**Quick fix:**")
+        lines.append(f"> {issue.get('remediation', 'Apply the recommended fix')}")
         lines.append("")
-        lines.append("**🤖 AI IDE Fix Prompt:**")
+        
+        # Collapsible AI prompt
+        lines.append("<details>")
+        lines.append("<summary>🤖 <b>AI IDE Fix</b></summary>")
+        lines.append("")
         lines.append("```")
-        lines.append(self._generate_fix_prompt_for_issue(issue))
+        lines.append(self._generate_simple_fix_prompt(issue))
         lines.append("```")
+        lines.append("</details>")
         
         return "\n".join(lines)
+    
+    def _generate_simple_fix_prompt(self, issue: Dict[str, Any]) -> str:
+        """Generate a simple, vibe-coder friendly fix prompt."""
+        location = issue.get('location', 'the file').replace('b/', '').replace('a/', '')
+        title = issue.get('title', 'the issue')
+        
+        # Very simple, direct prompts
+        if 'SQL' in title or 'injection' in title.lower():
+            return f"""Fix SQL injection in {location}
+
+Replace string formatting with parameterized queries.
+
+Example:
+# Instead of: f"SELECT * FROM users WHERE id = {{user_id}}"
+# Use: "SELECT * FROM users WHERE id = %s", (user_id,)"""
+        
+        elif 'hardcoded' in title.lower() or 'secret' in title.lower():
+            return f"""Remove hardcoded secret in {location}
+
+Move to environment variable.
+
+Example:
+# Instead of: api_key = "sk-123456"
+# Use: api_key = os.getenv('API_KEY')"""
+        
+        elif 'error' in title.lower() or 'exception' in title.lower():
+            return f"""Fix error handling in {location}
+
+Add proper exception handling.
+
+Example:
+# Instead of: except: pass
+# Use: except SpecificError as e:
+#          logger.error(f"Failed: {{e}}")"""
+        
+        else:
+            return f"""Fix: {title} in {location}
+
+{issue.get('remediation', 'Apply the recommended fix')}"""
     
     def _extract_path_from_location(self, location: str) -> Optional[str]:
         """Extract file path from location string."""
@@ -2148,6 +2123,10 @@ Steps:
         try:
             # Import the enhanced formatter
             from enhanced_review_formatter import EnhancedReviewFormatter
+            
+            # Set the review prompt type in environment for the formatter
+            if hasattr(self.config, 'prompt_type'):
+                os.environ['REVIEW_PROMPT_TYPE'] = self.config.prompt_type
             
             # Use enhanced formatter to create readable review
             formatter = EnhancedReviewFormatter()
