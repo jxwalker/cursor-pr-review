@@ -1,0 +1,45 @@
+Perform a comprehensive security-focused code review. Prioritize security above all other concerns:
+
+1. **AUTHENTICATION & AUTHORIZATION**:
+   - Login/logout mechanisms
+   - Session management
+   - Token validation and expiry
+   - Permission checks and role verification
+   - Multi-factor authentication implementation
+
+2. **INPUT VALIDATION & SANITIZATION**:
+   - SQL injection prevention
+   - XSS protection
+   - CSRF token usage
+   - File upload validation
+   - API parameter validation
+
+3. **DATA PROTECTION**:
+   - Encryption at rest and in transit
+   - Sensitive data handling
+   - PII protection measures
+   - Secure data transmission
+   - Key management practices
+
+4. **VULNERABILITY PATTERNS**:
+   - Command injection risks
+   - Path traversal vulnerabilities
+   - Deserialization attacks
+   - Race condition exploits
+   - Information disclosure
+
+5. **SECURITY BEST PRACTICES**:
+   - Principle of least privilege
+   - Defense in depth
+   - Secure defaults
+   - Error message safety
+   - Logging security events
+
+For every security concern:
+- Rate severity as CRITICAL/HIGH/MEDIUM/LOW
+- Provide specific attack scenarios
+- Give detailed remediation steps
+- Reference security standards (OWASP, etc.)
+- Suggest security testing approaches
+
+Assume adversarial conditions and look for ways attackers might exploit the code.

@@ -13,9 +13,6 @@ from unittest.mock import patch, MagicMock
 def test_self_improvement():
     """Test self-improvement analysis with mock data from our repository."""
     
-    print("🔄 Testing Self-Improvement Analysis")
-    print("=" * 60)
-    
     # Create test configuration
     config = ReviewConfig(
         github_token="ghp_test_token_for_demo",
@@ -25,10 +22,6 @@ def test_self_improvement():
         repo="jxwalker/cursor-pr-review",
         review_strictness="balanced"
     )
-    
-    print(f"📊 Analyzing repository: {config.repo}")
-    print(f"🤖 AI Provider: {config.ai_provider}")
-    print(f"📏 Review Strictness: {config.review_strictness}")
     
     # Mock the GitHub API responses to simulate our repository data
     mock_prs = [
@@ -113,11 +106,6 @@ This PR implements the initial phase of CodeRabbit integration.
 ⚠️ **This PR has issues that should be addressed before merging.**'''
     ]
     
-    print("\n📋 Mock Data Summary:")
-    print(f"  • PRs to analyze: {len(mock_prs)}")
-    print(f"  • CodeRabbit comments: {len(mock_coderabbit_comments)}")
-    print(f"  • Our AI reviews: {len(mock_our_reviews)}")
-    
     # Extract patterns manually for demonstration
     print("\n🔍 Pattern Analysis:")
     print("-" * 40)
@@ -196,22 +184,19 @@ This PR implements the initial phase of CodeRabbit integration.
     print(f"🔄 Feedback sources: GitHub AI, CodeRabbit, Own Reviews")
     print(f"📈 Learning capability: Active and functional")
     
-    return {
+    result = {
         'github_ai_insights': len(github_ai_insights),
         'coderabbit_patterns': len(coderabbit_patterns),
         'our_patterns': len(our_patterns),
         'recommendations': len(recommendations)
     }
+    
+    # Assertions to verify expected behavior
+    assert result['github_ai_insights'] == 1, f"Expected 1 GitHub AI insight, got {result['github_ai_insights']}"
+    assert result['coderabbit_patterns'] == 4, f"Expected 4 CodeRabbit patterns, got {result['coderabbit_patterns']}"
+    assert result['our_patterns'] == 4, f"Expected 4 our AI review patterns, got {result['our_patterns']}"
+    assert result['recommendations'] == 6, f"Expected 6 recommendations, got {result['recommendations']}"
+    return result
 
 if __name__ == "__main__":
-    result = test_self_improvement()
-    
-    print("\n\n🎯 SELF-IMPROVEMENT TEST COMPLETE!")
-    print("=" * 60)
-    print("✅ GitHub AI agent prompt extraction working")
-    print("✅ CodeRabbit pattern analysis functional")
-    print("✅ Our AI review pattern recognition active")
-    print("✅ Improvement recommendations generated")
-    print("✅ Multi-source feedback loop established")
-    print("\n🚀 The tool successfully learns from its own usage and improves over time!")
-    print(f"\n📊 Analysis Results: {result}")
+    test_self_improvement()

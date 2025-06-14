@@ -52,6 +52,8 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
         @wraps(func)
         def wrapper(*args, **kwargs):
             last_exception = None
+            if max_retries < 1:
+                raise ValueError("max_retries must be >= 1")
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
@@ -63,7 +65,10 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
                         time.sleep(wait_time)
                     else:
                         logger.error(f"API call failed after {max_retries} attempts: {e}")
-            raise last_exception
+            if last_exception is not None:
+                raise last_exception
+            else:
+                raise RuntimeError("No exception captured in retry_on_failure")
         return wrapper
     return decorator
 
@@ -106,7 +111,82 @@ class ReviewConfig:
     coderabbit_auto_approve: bool = False
     review_strictness: str = "balanced"  # 'strict', 'balanced', 'lenient'
     auto_request_changes: bool = True  # Automatically request changes for critical issues
-    prompt_template: str = """Please review this code diff carefully and provide detailed feedback. Focus on:
+    prompt_type: str = "default"  # Type of prompt to use: default, strict, lenient, security-focused, custom
+    prompt_template: str = ""  # Will be loaded dynamically based on prompt_type
+    
+    def validate(self) -> None:
+        """Validate all configuration values."""
+        if len(self.github_token) < 20:
+            raise SecurityError(
+                "GitHub token too short", 
+                "Get a valid token at https://github.com/settings/tokens"
+            )
+        if len(self.ai_key) < 20:
+            raise SecurityError(
+                f"{self.ai_provider} API key too short",
+                f"Get a valid key from {self.ai_provider} console"
+            )
+        if '/' not in self.repo:
+            raise ConfigError(
+                "Invalid repository format",
+                "Use format 'owner/repo' (e.g. 'microsoft/vscode')"
+            )
+        if self.ai_provider not in ['openai', 'anthropic']:
+            raise ConfigError(
+                f"Unsupported AI provider: {self.ai_provider}",
+                "Use 'openai' or 'anthropic'"
+            )
+        if self.coderabbit_threshold not in ['low', 'medium', 'high']:
+            raise ConfigError(
+                f"Invalid CodeRabbit threshold: {self.coderabbit_threshold}",
+                "Use 'low', 'medium', or 'high'"
+            )
+        if self.review_strictness not in ['strict', 'balanced', 'lenient']:
+            raise ConfigError(
+                f"Invalid review strictness: {self.review_strictness}",
+                "Use 'strict', 'balanced', or 'lenient'"
+            )
+        if self.prompt_type not in get_available_prompts():
+            logger.warning(f"Prompt type '{self.prompt_type}' not available, will use default")
+
+# Prompt management
+def get_available_prompts() -> List[str]:
+    """Get list of available prompt templates."""
+    prompts_dir = Path('prompts')
+    if not prompts_dir.exists():
+        return ['default']
+    
+    prompt_files = list(prompts_dir.glob('*.txt'))
+    return [f.stem for f in prompt_files] + ['custom']
+
+def load_prompt_template(prompt_name: str) -> str:
+    """Load prompt template from file or return default."""
+    if prompt_name == 'custom':
+        config_dir = Path.home() / '.cursor-pr-review'
+        custom_file = config_dir / 'custom_prompt.txt'
+        if custom_file.exists():
+            try:
+                return custom_file.read_text(encoding='utf-8').strip()
+            except OSError as e:
+                logger.warning(f"Failed to load custom prompt: {e}")
+                return get_default_prompt()
+        else:
+            return get_default_prompt()
+    
+    prompt_file = Path('prompts') / f'{prompt_name}.txt'
+    if prompt_file.exists():
+        try:
+            return prompt_file.read_text(encoding='utf-8').strip()
+        except OSError as e:
+            logger.warning(f"Failed to load prompt '{prompt_name}': {e}")
+            return get_default_prompt()
+    
+    logger.warning(f"Prompt '{prompt_name}' not found, using default")
+    return get_default_prompt()
+
+def get_default_prompt() -> str:
+    """Get the default prompt template."""
+    return """Please review this code diff carefully and provide detailed feedback. Focus on:
 
 1. **Security Issues**: Look for potential vulnerabilities, unsafe operations, or security anti-patterns
 2. **Bugs & Logic Errors**: Identify potential runtime errors, logic flaws, or edge cases
@@ -121,38 +201,106 @@ For each issue found, please:
 - Indicate the severity level (critical/error/warning/suggestion)
 
 If no significant issues are found, provide positive feedback and any minor suggestions for improvement."""
+
+def save_custom_prompt(prompt_content: str) -> None:
+    """Save custom prompt template."""
+    config_dir = Path.home() / '.cursor-pr-review'
+    config_dir.mkdir(exist_ok=True)
     
-    def validate(self) -> None:
-        """Validate all configuration values."""
-        if len(self.github_token) < 20:
-            raise SecurityError(
-                "GitHub token too short", 
-                "Get a valid token at https://github.com/settings/tokens"
-            )
+    custom_file = config_dir / 'custom_prompt.txt'
+    try:
+        custom_file.write_text(prompt_content, encoding='utf-8')
+        os.chmod(custom_file, 0o600)
+        logger.info(f"Custom prompt saved to {custom_file}")
+    except OSError as e:
+        raise ConfigError(f"Failed to save custom prompt: {e}", "Check permissions")
+
+def list_prompts() -> None:
+    """List available prompt templates with descriptions."""
+    prompts = get_available_prompts()
+    
+    print("\n📝 Available Prompt Templates:")
+    print("=" * 50)
+    
+    descriptions = {
+        'default': 'Balanced review focusing on security, bugs, performance, and quality',
+        'strict': 'Thorough analysis with zero tolerance for any issues',
+        'lenient': 'Focus on critical issues only, practical and constructive',
+        'security-focused': 'Comprehensive security-first analysis',
+        'custom': 'Your personalized prompt template'
+    }
+    
+    for prompt in prompts:
+        desc = descriptions.get(prompt, 'User-defined prompt template')
+        status = "✅" if prompt == 'custom' and (Path.home() / '.cursor-pr-review' / 'custom_prompt.txt').exists() else "📄"
+        print(f"  {status} {prompt:<20} - {desc}")
+    
+    print("\n💡 Use: python cursor_pr_review.py edit-prompt <name> to customize")
+    print("💡 Use: python cursor_pr_review.py view-prompt <name> to preview")
+
+def view_prompt(prompt_name: str) -> None:
+    """View a specific prompt template."""
+    prompt_content = load_prompt_template(prompt_name)
+    
+    print(f"\n📝 Prompt Template: {prompt_name}")
+    print("=" * 60)
+    print(prompt_content)
+    print("=" * 60)
+    print(f"\n💡 Length: {len(prompt_content)} characters")
+
+def edit_prompt_interactive() -> None:
+    """Interactive prompt editing."""
+    print("\n✏️  Custom Prompt Editor")
+    print("=" * 40)
+    
+    # Show current custom prompt if exists
+    config_dir = Path.home() / '.cursor-pr-review'
+    custom_file = config_dir / 'custom_prompt.txt'
+    
+    if custom_file.exists():
+        current_prompt = load_prompt_template('custom')
+        print("\n📄 Current custom prompt:")
+        print("-" * 40)
+        print(current_prompt[:200] + "..." if len(current_prompt) > 200 else current_prompt)
+        print("-" * 40)
         
-        if len(self.ai_key) < 20:
-            raise SecurityError(
-                f"{self.ai_provider} API key too short",
-                f"Get a valid key from {self.ai_provider} console"
-            )
-        
-        if '/' not in self.repo:
-            raise ConfigError(
-                "Invalid repository format",
-                "Use format 'owner/repo' (e.g. 'microsoft/vscode')"
-            )
-        
-        if self.ai_provider not in ['openai', 'anthropic']:
-            raise ConfigError(
-                f"Unsupported AI provider: {self.ai_provider}",
-                "Use 'openai' or 'anthropic'"
-            )
-            
-        if self.coderabbit_threshold not in ['low', 'medium', 'high']:
-            raise ConfigError(
-                f"Invalid CodeRabbit threshold: {self.coderabbit_threshold}",
-                "Use 'low', 'medium', or 'high'"
-            )
+        if input("\nEdit existing prompt? (y/n): ").strip().lower() != 'y':
+            return
+    
+    print("\n📝 Enter your custom prompt (press Ctrl+D when done, Ctrl+C to cancel):")
+    print("💡 Tip: Include placeholders for severity levels and specific guidance")
+    print("-" * 60)
+    
+    lines = []
+    try:
+        while True:
+            try:
+                line = input()
+                lines.append(line)
+            except EOFError:
+                break
+    except KeyboardInterrupt:
+        print("\n❌ Edit cancelled")
+        return
+    
+    prompt_content = '\n'.join(lines).strip()
+    
+    if not prompt_content:
+        print("❌ Empty prompt not saved")
+        return
+    
+    # Validate prompt
+    if len(prompt_content) < 50:
+        print("⚠️  Warning: Prompt seems very short. Continue anyway? (y/n): ", end="")
+        if input().strip().lower() != 'y':
+            return
+    
+    try:
+        save_custom_prompt(prompt_content)
+        print(f"\n✅ Custom prompt saved! ({len(prompt_content)} characters)")
+        print("💡 Use 'custom' as prompt type in your configuration")
+    except Exception as e:
+        print(f"❌ Failed to save prompt: {e}")
 
 # Configuration persistence
 def load_config() -> Optional[ReviewConfig]:
@@ -239,7 +387,8 @@ class APIClient:
         try:
             response = self.session.get(
                 "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {self.config.ai_key}"}
+                headers={"Authorization": f"Bearer {self.config.ai_key}"},
+                timeout=30
             )
             response.raise_for_status()
             return response.json()
@@ -249,8 +398,10 @@ class APIClient:
                 raise APIError(
                     "Invalid OpenAI API key",
                     "Get a key at https://platform.openai.com/api-keys"
-                )
+                ) from e
             raise APIError(f"OpenAI API error: {e}") from e
+        except requests.exceptions.RequestException as e:
+            raise APIError(f"OpenAI API connection failed: {e}", "Check internet connection") from e
     
     def _validate_anthropic(self) -> Dict[str, Any]:
         """Validate Anthropic API key."""
@@ -260,7 +411,8 @@ class APIClient:
                 headers={
                     "x-api-key": self.config.ai_key,
                     "anthropic-version": "2023-06-01"
-                }
+                },
+                timeout=30
             )
             response.raise_for_status()
             return response.json()
@@ -270,8 +422,10 @@ class APIClient:
                 raise APIError(
                     "Invalid Anthropic API key", 
                     "Get a key at https://console.anthropic.com"
-                )
+                ) from e
             raise APIError(f"Anthropic API error: {e}") from e
+        except requests.exceptions.RequestException as e:
+            raise APIError(f"Anthropic API connection failed: {e}", "Check internet connection") from e
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def get_pr_details(self, repo: str, pr_number: str) -> Dict[str, Any]:
@@ -279,7 +433,8 @@ class APIClient:
         try:
             response = self.session.get(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
-                headers={"Authorization": f"token {self.config.github_token}"}
+                headers={"Authorization": f"token {self.config.github_token}"},
+                timeout=30
             )
             response.raise_for_status()
             return response.json()
@@ -296,7 +451,8 @@ class APIClient:
                 headers={
                     "Authorization": f"token {self.config.github_token}",
                     "Accept": "application/vnd.github.v3.diff"
-                }
+                },
+                timeout=30
             )
             response.raise_for_status()
             return response.text
@@ -508,40 +664,34 @@ class APIClient:
     def get_github_ai_prompt(self, repo: str, pr_number: str) -> str:
         """Extract GitHub's AI agent prompt from PR description or comments."""
         try:
-            # Get PR details to check description
             response = self.session.get(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
-                headers={"Authorization": f"token {self.config.github_token}"}
+                headers={"Authorization": f"token {self.config.github_token}"},
+                timeout=30
             )
             response.raise_for_status()
             pr_data = response.json()
-
-            # Look for AI prompt in PR description
             pr_body = pr_data.get('body', '')
             ai_prompt = self._extract_ai_prompt_from_text(pr_body)
-
             if not ai_prompt:
-                # Check PR comments for AI prompts
                 response = self.session.get(
                     f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-                    headers={"Authorization": f"token {self.config.github_token}"}
+                    headers={"Authorization": f"token {self.config.github_token}"},
+                    timeout=30
                 )
                 response.raise_for_status()
                 comments = response.json()
-
                 for comment in comments:
                     comment_body = comment.get('body', '')
                     ai_prompt = self._extract_ai_prompt_from_text(comment_body)
                     if ai_prompt:
                         break
-
             if ai_prompt:
                 logger.info(f"Found GitHub AI agent prompt ({len(ai_prompt)} chars)")
                 return ai_prompt
             else:
                 logger.info("No GitHub AI agent prompt found")
                 return ""
-
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to get GitHub AI prompt: {e}")
             return ""
@@ -590,22 +740,18 @@ class APIClient:
     def get_coderabbit_comments(self, repo: str, pr_number: str) -> List[Dict[str, Any]]:
         """Get CodeRabbit comments from the PR."""
         try:
-            # Get all review comments on the PR
             response = self.session.get(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
-                headers={"Authorization": f"token {self.config.github_token}"}
+                headers={"Authorization": f"token {self.config.github_token}"},
+                timeout=30
             )
             response.raise_for_status()
             reviews = response.json()
-
-            # Filter for CodeRabbit reviews
             coderabbit_comments = []
             for review in reviews:
                 user = review.get('user', {})
-                # CodeRabbit typically uses 'coderabbitai' as username or has 'bot' in the type
                 if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
                     user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
-
                     coderabbit_comments.append({
                         'id': review['id'],
                         'body': review.get('body', ''),
@@ -613,21 +759,17 @@ class APIClient:
                         'submitted_at': review.get('submitted_at', ''),
                         'user': user.get('login', 'coderabbit')
                     })
-
-            # Also get individual review comments (line-specific comments)
             response = self.session.get(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/comments",
-                headers={"Authorization": f"token {self.config.github_token}"}
+                headers={"Authorization": f"token {self.config.github_token}"},
+                timeout=30
             )
             response.raise_for_status()
             line_comments = response.json()
-
-            # Filter line comments from CodeRabbit
             for comment in line_comments:
                 user = comment.get('user', {})
                 if (user.get('login', '').lower() in ['coderabbitai', 'coderabbit'] or
                     user.get('type', '').lower() == 'bot' and 'coderabbit' in user.get('login', '').lower()):
-
                     coderabbit_comments.append({
                         'id': comment['id'],
                         'body': comment.get('body', ''),
@@ -637,17 +779,15 @@ class APIClient:
                         'user': user.get('login', 'coderabbit'),
                         'type': 'line_comment'
                     })
-
             logger.info(f"Found {len(coderabbit_comments)} CodeRabbit comments")
             return coderabbit_comments
-
         except requests.exceptions.RequestException as e:
             logger.warning(f"Failed to get CodeRabbit comments: {e}")
-            return []  # Continue without CodeRabbit comments if fetch fails
+            return []
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def post_pr_review(self, repo: str, pr_number: str, comments: List[Dict[str, Any]]) -> None:
-        """Post review comments to GitHub PR with user-friendly, actionable output."""
+        """Post review comments to GitHub PR with clean, actionable output."""
         try:
             # Group comments by severity
             severity_groups = {
@@ -659,21 +799,23 @@ class APIClient:
             }
             for comment in comments:
                 severity = comment.get('severity', 'info')
-                severity_groups[severity].append(comment)
+                body = comment.get('body', '').strip()
+                # Only include non-empty, unique issues
+                if body and body not in [c['body'] for c in severity_groups[severity]]:
+                    severity_groups[severity].append(comment)
 
             # Build summary checklist
-            summary = ""
-            summary += "## 🚦 PR Review Summary\n\n"
+            summary = "## 🚦 PR Review Summary\n\n"
             summary += "**What to fix before merging:**\n"
             blocking = severity_groups['critical'] + severity_groups['error']
             if blocking:
                 for c in blocking:
-                    summary += f"- [ ] {c['body'].split('.')[0]}\n"
+                    summary += f"- [ ] {c['body'].splitlines()[0]}\n"
             else:
                 summary += "- [x] No blocking issues found!\n"
             summary += "\n**What to improve later:**\n"
             for c in severity_groups['warning'] + severity_groups['suggestion']:
-                summary += f"- [ ] {c['body'].split('.')[0]}\n"
+                summary += f"- [ ] {c['body'].splitlines()[0]}\n"
             if not (severity_groups['warning'] or severity_groups['suggestion']):
                 summary += "- [x] No suggestions or warnings!\n"
 
@@ -689,47 +831,34 @@ class APIClient:
             for severity, group_comments in severity_groups.items():
                 if group_comments:
                     icon = severity_icons.get(severity, 'ℹ️')
-                    details += f"\n### {icon} {severity.title()} Issues\n\n"
+                    details += f"\n### {icon} {severity.title()} Issues\n"
                     for i, comment in enumerate(group_comments, 1):
-                        details += f"**{i}. {comment['body'].split('.')[0]}**\n"
-                        details += f"- **Severity:** {severity.title()}\n"
-                        if 'suggestion' in comment:
-                            details += f"- **How to fix:** {comment['suggestion']}\n"
-                        else:
-                            details += f"- **How to fix:** _(Please address as appropriate)_\n"
-                        details += "\n"
+                        body = comment['body'].strip()
+                        suggestion = comment.get('suggestion', 'Please address as appropriate.')
+                        details += f"\n**{i}. {body}**\n"
+                        details += f"- **How to fix:** {suggestion}\n"
 
             # Build copy-paste instructions for the agent
-            instructions = ""
-            instructions += "---\n"
-            instructions += "## 🤖 Copy-paste instructions for your agent\n\n"
+            instructions = "---\n## 🤖 Copy-paste instructions for your agent\n\n"
             if blocking:
                 instructions += "**Please address the following blocking issues before merging:**\n"
                 for c in blocking:
-                    instructions += f"- {c['body'].split('.')[0]}\n"
+                    instructions += f"- {c['body'].splitlines()[0]}\n"
             else:
                 instructions += "No blocking issues. You may merge after reviewing suggestions.\n"
             if severity_groups['warning'] or severity_groups['suggestion']:
                 instructions += "\n**Suggestions for improvement:**\n"
                 for c in severity_groups['warning'] + severity_groups['suggestion']:
-                    instructions += f"- {c['body'].split('.')[0]}\n"
+                    instructions += f"- {c['body'].splitlines()[0]}\n"
 
             # Compose the full review body
-            review_body = summary + details + instructions
+            review_body = summary + details + "\n" + instructions
 
-            # Determine review event
-            has_critical = bool(severity_groups['critical'])
-            has_errors = bool(severity_groups['error'])
-            has_warnings = bool(severity_groups['warning'])
-            should_request_changes = False
-            if self.config.auto_request_changes:
-                if self.config.review_strictness == "strict":
-                    should_request_changes = has_critical or has_errors or has_warnings
-                elif self.config.review_strictness == "balanced":
-                    should_request_changes = has_critical or has_errors
-                elif self.config.review_strictness == "lenient":
-                    should_request_changes = has_critical
-            event = "REQUEST_CHANGES" if should_request_changes else "COMMENT"
+            # Log the review body for debugging
+            logger.info(f"Review body to be posted:\n{review_body}")
+
+            # Always use 'COMMENT' for now to avoid 422 errors
+            event = "COMMENT"
 
             response = self.session.post(
                 f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews",
@@ -749,8 +878,6 @@ class APIClient:
 def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
     """Generate workflow using proper YAML structure."""
     env_key = "OPENAI_API_KEY" if config.ai_provider == "openai" else "ANTHROPIC_API_KEY"
-    
-    # Proper YAML structure - no string templates
     workflow = {
         'name': 'AI PR Review',
         'on': {
@@ -779,7 +906,7 @@ def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
             'ai-review': {
                 'name': 'Custom AI Code Review',
                 'runs-on': 'ubuntu-latest',
-                'needs': ['coderabbit-review'],  # Run after CodeRabbit completes
+                'needs': ['coderabbit-review'],
                 'steps': [
                     {
                         'name': 'Checkout code',
@@ -800,7 +927,7 @@ def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
                         'name': 'Run AI Review',
                         'env': {
                             'GITHUB_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
-                            env_key: f'${{{{ secrets.{env_key} }}}}'
+                            env_key: f'${{ secrets.{env_key} }}'
                         },
                         'run': f'python cursor_pr_review.py review-pr {config.repo} ${{{{ github.event.pull_request.number }}}}'
                     }
@@ -808,7 +935,6 @@ def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
             }
         }
     }
-    
     return workflow
 
 def save_github_workflow(config: ReviewConfig) -> None:
@@ -834,7 +960,7 @@ def create_coderabbit_config(config: ReviewConfig) -> Dict[str, Any]:
     coderabbit_config = {
         'version': 2,
         'reviews': {
-            'request_changes_threshold': 'medium',
+            'request_changes_threshold': config.coderabbit_threshold,
             'approve_threshold': 'low',
             'auto_review': {
                 'enabled': True,
@@ -842,8 +968,8 @@ def create_coderabbit_config(config: ReviewConfig) -> Dict[str, Any]:
                 'base_branches': ['main', 'master']
             },
             'auto_approve': {
-                'enabled': False,
-                'threshold': 'low'
+                'enabled': config.coderabbit_auto_approve,
+                'threshold': config.coderabbit_threshold
             },
             'path_filters': {
                 'ignore': ['*.md', 'LICENSE', '*.txt']
@@ -859,11 +985,11 @@ def create_coderabbit_config(config: ReviewConfig) -> Dict[str, Any]:
     coderabbit_config['languages'] = {
         'python': {
             'reviewers': ['ai'],
-            'threshold': 'medium'
+            'threshold': config.coderabbit_threshold
         },
         'javascript': {
             'reviewers': ['ai'],
-            'threshold': 'medium'
+            'threshold': config.coderabbit_threshold
         }
     }
     
@@ -981,8 +1107,8 @@ def prompt_coderabbit_setup() -> tuple[str, bool]:
     
     return threshold, auto_approve
 
-def prompt_review_settings() -> tuple[str, bool]:
-    """Setup AI review strictness settings."""
+def prompt_review_settings() -> tuple[str, bool, str]:
+    """Setup AI review strictness settings and prompt type."""
     logger.info("AI Review Configuration")
 
     strictness = input("Review strictness (strict/balanced/lenient) [balanced]: ").strip().lower()
@@ -995,10 +1121,39 @@ def prompt_review_settings() -> tuple[str, bool]:
     auto_request = input("Auto-request changes for issues? (y/n) [y]: ").strip().lower()
     auto_request_changes = auto_request != 'n'
 
+    # Prompt type selection
+    logger.info("\nPrompt Template Selection:")
+    available_prompts = get_available_prompts()
+    for i, prompt in enumerate(available_prompts, 1):
+        desc = {
+            'default': 'Balanced review focusing on security, bugs, performance, and quality',
+            'strict': 'Thorough analysis with zero tolerance for any issues',
+            'lenient': 'Focus on critical issues only, practical and constructive',
+            'security-focused': 'Comprehensive security-first analysis',
+            'custom': 'Your personalized prompt template'
+        }.get(prompt, 'User-defined prompt template')
+        logger.info(f"  {i}. {prompt} - {desc}")
+    
+    choice = input(f"Choose prompt template (1-{len(available_prompts)}) [1]: ").strip()
+    if not choice:
+        choice = "1"
+    
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(available_prompts):
+            prompt_type = available_prompts[idx]
+        else:
+            logger.warning("Invalid choice, using default")
+            prompt_type = "default"
+    except ValueError:
+        logger.warning("Invalid choice, using default")
+        prompt_type = "default"
+
     logger.info(f"Review strictness: {strictness}")
     logger.info(f"Auto-request changes: {'Yes' if auto_request_changes else 'No'}")
+    logger.info(f"Prompt template: {prompt_type}")
 
-    return strictness, auto_request_changes
+    return strictness, auto_request_changes, prompt_type
 
 def self_improve_from_own_prs(config: ReviewConfig) -> None:
     """Analyze our own PRs to extract improvement insights."""
@@ -1011,7 +1166,8 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
         response = client.session.get(
             f"https://api.github.com/repos/{config.repo}/pulls",
             headers={"Authorization": f"token {config.github_token}"},
-            params={"state": "all", "per_page": 10, "sort": "updated"}
+            params={"state": "all", "per_page": 10, "sort": "updated"},
+            timeout=30
         )
         response.raise_for_status()
         prs = response.json()
@@ -1030,12 +1186,17 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
             # Get CodeRabbit comments
             coderabbit_comments = client.get_coderabbit_comments(config.repo, str(pr_number))
 
+            # Load the appropriate prompt template
+            if not config.prompt_template:
+                config.prompt_template = load_prompt_template(config.prompt_type)
+            
             # Get our own AI review comments
             our_reviews = []
             try:
                 response = client.session.get(
                     f"https://api.github.com/repos/{config.repo}/pulls/{pr_number}/reviews",
-                    headers={"Authorization": f"token {config.github_token}"}
+                    headers={"Authorization": f"token {config.github_token}"},
+                    timeout=30
                 )
                 response.raise_for_status()
                 reviews = response.json()
@@ -1043,7 +1204,7 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
                 for review in reviews:
                     if "🤖 **AI Code Review Results**" in review.get('body', ''):
                         our_reviews.append(review['body'])
-            except:
+            except Exception:
                 pass
 
             # Compile insights
@@ -1223,7 +1384,7 @@ def setup() -> None:
         coderabbit_threshold, coderabbit_auto_approve = prompt_coderabbit_setup()
 
         # AI Review settings
-        review_strictness, auto_request_changes = prompt_review_settings()
+        review_strictness, auto_request_changes, prompt_type = prompt_review_settings()
 
         # Create and validate config
         config = ReviewConfig(
@@ -1236,7 +1397,8 @@ def setup() -> None:
             coderabbit_threshold=coderabbit_threshold,
             coderabbit_auto_approve=coderabbit_auto_approve,
             review_strictness=review_strictness,
-            auto_request_changes=auto_request_changes
+            auto_request_changes=auto_request_changes,
+            prompt_type=prompt_type
         )
         
         # Validate tokens and get model
@@ -1265,10 +1427,14 @@ def main():
     try:
         if len(sys.argv) == 1:
             # Use logger, NOT print
-            logger.info("Cursor PR Review - Finally Production Ready")
+            logger.info("Cursor PR Review - Production Ready")
             logger.info("Usage:")
-            logger.info("  python cursor_pr_review_final.py setup")
-            logger.info("  python cursor_pr_review_final.py review-pr owner/repo 123")
+            logger.info("  python cursor_pr_review.py setup")
+            logger.info("  python cursor_pr_review.py review-pr owner/repo 123")
+            logger.info("  python cursor_pr_review.py list-prompts")
+            logger.info("  python cursor_pr_review.py view-prompt <name>")
+            logger.info("  python cursor_pr_review.py edit-prompt [custom]")
+            logger.info("  python cursor_pr_review.py self-improve")
             return
         
         command = sys.argv[1]
@@ -1297,8 +1463,24 @@ def main():
                 raise ConfigError("No configuration found", "Run setup first")
 
             self_improve_from_own_prs(config)
+        elif command == "list-prompts":
+            list_prompts()
+        elif command == "view-prompt":
+            if len(sys.argv) < 3:
+                raise ConfigError("Usage: view-prompt <prompt-name>")
+            view_prompt(sys.argv[2])
+        elif command == "edit-prompt":
+            if len(sys.argv) < 3:
+                # Interactive mode
+                edit_prompt_interactive()
+            else:
+                prompt_name = sys.argv[2]
+                if prompt_name == 'custom':
+                    edit_prompt_interactive()
+                else:
+                    raise ConfigError(f"Cannot edit built-in prompt '{prompt_name}'", "Use 'edit-prompt custom' or 'edit-prompt' for interactive mode")
         else:
-            raise ConfigError(f"Unknown command: {command}", "Use 'setup' or 'review-pr'")
+            raise ConfigError(f"Unknown command: {command}", "Use 'setup', 'review-pr', 'list-prompts', 'view-prompt', or 'edit-prompt'")
     
     except KeyboardInterrupt:
         logger.info("Interrupted")
