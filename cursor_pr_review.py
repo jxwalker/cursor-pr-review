@@ -1098,14 +1098,30 @@ class APIClient:
         """Convert the deduplicated analysis report to comment format for posting."""
         comments = []
         
-        # Convert each individual issue to a separate comment for better formatting
         if analysis_report['summary']['total_issues'] > 0:
-            # Process all sections
-            for section_name, section_data in analysis_report['sections'].items():
-                if section_data['count'] > 0:
-                    for issue in section_data['issues']:
-                        # Create a detailed comment for each issue
-                        comment_body = self._format_issue_as_comment(issue, section_name)
+            # First, group similar issues together
+            grouped_issues = self._group_similar_issues(analysis_report)
+            
+            # Create comments for grouped issues
+            for group in grouped_issues:
+                if len(group['issues']) > 3:  # Consolidate if more than 3 similar issues
+                    comment_body = self._format_consolidated_issue_comment(group)
+                    
+                    # Use the first issue's properties for the comment metadata
+                    first_issue = group['issues'][0]
+                    comments.append({
+                        'body': comment_body,
+                        'severity': first_issue.get('severity', 'info'),
+                        'path': None,  # Multiple locations, so no single path
+                        'line': None,  # Multiple lines
+                        'sources': first_issue.get('sources', []),
+                        'type': 'actionable_comment',
+                        'user': f"{self.config.ai_provider}_ai"
+                    })
+                else:
+                    # For small groups, create individual comments
+                    for issue in group['issues']:
+                        comment_body = self._format_issue_as_comment(issue, group['section_name'])
                         
                         comments.append({
                             'body': comment_body,
@@ -1118,6 +1134,289 @@ class APIClient:
                         })
         
         return comments
+    
+    def _group_similar_issues(self, analysis_report: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Group similar issues together to avoid repetitive comments."""
+        groups = []
+        
+        # Process each section
+        for section_name, section_data in analysis_report['sections'].items():
+            if section_data['count'] > 0:
+                # Group by issue title pattern and remediation
+                issue_groups = {}
+                
+                for issue in section_data['issues']:
+                    # Create a group key based on the issue pattern
+                    group_key = self._get_issue_group_key(issue)
+                    
+                    if group_key not in issue_groups:
+                        issue_groups[group_key] = {
+                            'section_name': section_name,
+                            'title_pattern': self._extract_issue_pattern(issue['title']),
+                            'remediation': issue.get('remediation', ''),
+                            'severity': issue.get('severity', 'info'),
+                            'issues': []
+                        }
+                    
+                    issue_groups[group_key]['issues'].append(issue)
+                
+                # Add all groups to the result
+                groups.extend(issue_groups.values())
+        
+        return groups
+    
+    def _get_issue_group_key(self, issue: Dict[str, Any]) -> str:
+        """Generate a key for grouping similar issues."""
+        # Extract the core issue type, removing line numbers and specific details
+        title = issue.get('title', '')
+        
+        # Common patterns to normalize
+        patterns_to_remove = [
+            r' on line \d+',
+            r' at line \d+',
+            r' in .+:\d+',
+            r' at .+:\d+',
+            r':.+$',  # Remove everything after colon
+            r'\(.+\)$',  # Remove parenthetical content at end
+        ]
+        
+        normalized_title = title
+        for pattern in patterns_to_remove:
+            normalized_title = re.sub(pattern, '', normalized_title)
+        
+        # Combine normalized title with remediation for grouping
+        remediation = issue.get('remediation', '')[:50]  # First 50 chars of remediation
+        
+        return f"{normalized_title.strip()}|{remediation}"
+    
+    def _extract_issue_pattern(self, title: str) -> str:
+        """Extract the core pattern from an issue title."""
+        # Remove specific details to get the pattern
+        patterns_to_remove = [
+            r' on line \d+',
+            r' at line \d+',
+            r' in .+:\d+',
+            r' at .+:\d+',
+        ]
+        
+        pattern = title
+        for p in patterns_to_remove:
+            pattern = re.sub(p, '', pattern)
+        
+        return pattern.strip()
+    
+    def _format_consolidated_issue_comment(self, group: Dict[str, Any]) -> str:
+        """Format a group of similar issues as a single consolidated comment."""
+        lines = []
+        issues = group['issues']
+        
+        # Title with count
+        severity_emoji = {
+            'critical': '🚨',
+            'error': '❌', 
+            'warning': '⚠️',
+            'info': 'ℹ️'
+        }
+        emoji = severity_emoji.get(group['severity'], 'ℹ️')
+        
+        lines.append(f"{emoji} **{group['title_pattern']} ({len(issues)} occurrences)**")
+        lines.append("")
+        
+        # Category
+        if group['section_name'] == 'security':
+            lines.append(f"**🔒 Security Issue**")
+            # Add OWASP if all issues have the same category
+            owasp_cats = set(issue.get('owasp_category') for issue in issues if issue.get('owasp_category'))
+            if len(owasp_cats) == 1:
+                lines.append(f"**🛡️ OWASP Category:** {owasp_cats.pop()}")
+        elif group['section_name'] == 'error_handling':
+            lines.append(f"**⚠️ Error Handling Issue**")
+        else:
+            lines.append(f"**📋 Code Quality Issue**")
+        
+        lines.append("")
+        
+        # Consolidated locations
+        lines.append("**📍 Locations:**")
+        
+        # Group by file
+        locations_by_file = {}
+        for issue in issues:
+            location = issue.get('location', 'unknown')
+            if location and location != 'unknown':
+                file_path = self._extract_path_from_location(location)
+                line_num = self._extract_line_from_location(location)
+                
+                if file_path:
+                    if file_path not in locations_by_file:
+                        locations_by_file[file_path] = []
+                    if line_num:
+                        locations_by_file[file_path].append(line_num)
+        
+        # Format locations by file
+        for file_path, line_numbers in sorted(locations_by_file.items()):
+            if line_numbers:
+                # Sort and format line numbers
+                line_numbers = sorted(set(line_numbers))
+                
+                # Group consecutive numbers
+                line_ranges = []
+                start = line_numbers[0]
+                end = start
+                
+                for i in range(1, len(line_numbers)):
+                    if line_numbers[i] == end + 1:
+                        end = line_numbers[i]
+                    else:
+                        if start == end:
+                            line_ranges.append(str(start))
+                        else:
+                            line_ranges.append(f"{start}-{end}")
+                        start = line_numbers[i]
+                        end = start
+                
+                # Add the last range
+                if start == end:
+                    line_ranges.append(str(start))
+                else:
+                    line_ranges.append(f"{start}-{end}")
+                
+                lines.append(f"- `{file_path}`: lines {', '.join(line_ranges)}")
+            else:
+                lines.append(f"- `{file_path}`")
+        
+        lines.append("")
+        
+        # Common description
+        if issues[0].get('description'):
+            lines.append("**Description:**")
+            lines.append(issues[0]['description'])
+            lines.append("")
+        
+        # Show a few example code snippets (max 3)
+        code_snippets = []
+        for issue in issues[:3]:
+            if issue.get('code_snippet'):
+                location = issue.get('location', 'unknown')
+                code_snippets.append((location, issue['code_snippet']))
+        
+        if code_snippets:
+            lines.append("**Example Code:**")
+            for i, (location, snippet) in enumerate(code_snippets, 1):
+                if i > 1:
+                    lines.append("")
+                lines.append(f"Example {i} ({location}):")
+                lines.append("```")
+                lines.append(snippet)
+                lines.append("```")
+            
+            if len(issues) > 3:
+                lines.append(f"\n*...and {len(issues) - 3} more similar occurrences*")
+            lines.append("")
+        
+        # Remediation (same for all)
+        if group['remediation']:
+            lines.append("**🔧 How to Fix:**")
+            lines.append(group['remediation'])
+            lines.append("")
+        
+        # Root cause (if consistent)
+        root_causes = set(issue.get('root_cause', '') for issue in issues if issue.get('root_cause'))
+        if len(root_causes) == 1 and root_causes != {''}:
+            lines.append(f"**Root Cause:** {root_causes.pop()}")
+            lines.append("")
+        
+        # Sources
+        all_sources = set()
+        for issue in issues:
+            all_sources.update(issue.get('sources', []))
+        
+        if all_sources:
+            sources_str = ", ".join(sorted(all_sources))
+            lines.append(f"**🔍 Detected by:** {sources_str}")
+            lines.append("")
+        
+        # AI IDE Prompt for fixing multiple occurrences
+        lines.append("**🤖 AI IDE Fix Prompt:**")
+        lines.append("```")
+        lines.append(self._generate_bulk_fix_prompt(group))
+        lines.append("```")
+        
+        return "\n".join(lines)
+    
+    def _generate_bulk_fix_prompt(self, group: Dict[str, Any]) -> str:
+        """Generate an AI IDE prompt for fixing multiple similar issues."""
+        title_pattern = group['title_pattern']
+        num_issues = len(group['issues'])
+        
+        # Get file list
+        files = set()
+        for issue in group['issues']:
+            file_path = self._extract_path_from_location(issue.get('location', ''))
+            if file_path:
+                files.add(file_path)
+        
+        files_str = ", ".join(sorted(files)[:3])
+        if len(files) > 3:
+            files_str += f" and {len(files) - 3} more files"
+        
+        # Create specific prompts based on issue type
+        if 'exception' in title_pattern.lower() and 'logging' in title_pattern.lower():
+            return f"""Fix {num_issues} instances of missing exception logging across the codebase.
+
+Issue: {title_pattern}
+Files affected: {files_str}
+
+Steps:
+1. Search for all except blocks without logging
+2. Add appropriate logging for each exception
+3. Use logger.exception() for full stack traces
+4. Ensure all errors are properly tracked
+
+Example fix:
+# Bad: 
+except Exception:
+    pass
+
+# Good:
+except Exception as e:
+    logger.exception("Failed to process request")
+    raise
+
+Apply this pattern to all {num_issues} occurrences."""
+        
+        elif 'bare except' in title_pattern.lower():
+            return f"""Fix {num_issues} bare except clauses across the codebase.
+
+Issue: {title_pattern}
+Files affected: {files_str}
+
+Steps:
+1. Find all bare except: clauses
+2. Replace with specific exception types
+3. Add proper error handling
+4. Ensure exceptions are not silently ignored
+
+Example fix:
+# Bad: except:
+# Good: except (ValueError, KeyError) as e:
+
+Apply to all {num_issues} occurrences."""
+        
+        else:
+            remediation = group.get('remediation', 'Apply the recommended fix')
+            return f"""Fix {num_issues} instances of: {title_pattern}
+
+Files affected: {files_str}
+Required Action: {remediation}
+
+Steps:
+1. Locate all {num_issues} occurrences of this issue
+2. Apply the same fix pattern to each
+3. Test that all fixes work correctly
+4. Ensure consistency across all changes
+
+Review each occurrence and apply the appropriate fix."""
     
     def _format_issue_as_comment(self, issue: Dict[str, Any], section_name: str) -> str:
         """Format a single issue as a detailed comment."""
