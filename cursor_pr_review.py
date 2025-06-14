@@ -1098,18 +1098,200 @@ class APIClient:
         """Convert the deduplicated analysis report to comment format for posting."""
         comments = []
         
-        # Create a single comprehensive comment with all deduplicated issues
+        # Convert each individual issue to a separate comment for better formatting
         if analysis_report['summary']['total_issues'] > 0:
-            formatted_report = self._format_structured_report(analysis_report)
-            comments.append({
-                'body': formatted_report,
-                'severity': 'info',
-                'path': None,
-                'line': None,
-                'sources': list(analysis_report.get('source_attribution', {}).keys())
-            })
+            # Process all sections
+            for section_name, section_data in analysis_report['sections'].items():
+                if section_data['count'] > 0:
+                    for issue in section_data['issues']:
+                        # Create a detailed comment for each issue
+                        comment_body = self._format_issue_as_comment(issue, section_name)
+                        
+                        comments.append({
+                            'body': comment_body,
+                            'severity': issue.get('severity', 'info'),
+                            'path': self._extract_path_from_location(issue.get('location', '')),
+                            'line': self._extract_line_from_location(issue.get('location', '')),
+                            'sources': issue.get('sources', []),
+                            'type': 'actionable_comment',
+                            'user': f"{self.config.ai_provider}_ai"
+                        })
         
         return comments
+    
+    def _format_issue_as_comment(self, issue: Dict[str, Any], section_name: str) -> str:
+        """Format a single issue as a detailed comment."""
+        lines = []
+        
+        # Title with severity
+        severity_emoji = {
+            'critical': '🚨',
+            'error': '❌', 
+            'warning': '⚠️',
+            'info': 'ℹ️'
+        }
+        emoji = severity_emoji.get(issue.get('severity', 'info'), 'ℹ️')
+        
+        lines.append(f"{emoji} **{issue['title']}**")
+        lines.append("")
+        
+        # Category and OWASP mapping
+        if section_name == 'security':
+            lines.append(f"**🔒 Security Issue**")
+            if issue.get('owasp_category'):
+                lines.append(f"**🛡️ OWASP Category:** {issue['owasp_category']}")
+        elif section_name == 'error_handling':
+            lines.append(f"**⚠️ Error Handling Issue**")
+        else:
+            lines.append(f"**📋 Code Quality Issue**")
+        
+        lines.append("")
+        
+        # Location
+        if issue.get('location') and issue['location'] != 'unknown':
+            lines.append(f"**📍 Location:** `{issue['location']}`")
+        
+        # Description
+        if issue.get('description'):
+            lines.append("")
+            lines.append("**Description:**")
+            lines.append(issue['description'])
+        
+        # Code snippet
+        if issue.get('code_snippet'):
+            lines.append("")
+            lines.append("**Problematic Code:**")
+            lines.append("```")
+            lines.append(issue['code_snippet'])
+            lines.append("```")
+        
+        # Remediation
+        if issue.get('remediation'):
+            lines.append("")
+            lines.append("**🔧 How to Fix:**")
+            lines.append(issue['remediation'])
+        
+        # Root cause
+        if issue.get('root_cause'):
+            lines.append("")
+            lines.append(f"**Root Cause:** {issue['root_cause']}")
+        
+        # Confidence score
+        if issue.get('confidence'):
+            confidence_pct = int(issue['confidence'] * 100)
+            lines.append("")
+            lines.append(f"**📊 Confidence:** {confidence_pct}%")
+        
+        # Sources
+        if issue.get('sources'):
+            sources_str = ", ".join(issue['sources'])
+            lines.append("")
+            lines.append(f"**🔍 Detected by:** {sources_str}")
+        
+        # AI IDE Prompt
+        lines.append("")
+        lines.append("**🤖 AI IDE Fix Prompt:**")
+        lines.append("```")
+        lines.append(self._generate_fix_prompt_for_issue(issue))
+        lines.append("```")
+        
+        return "\n".join(lines)
+    
+    def _extract_path_from_location(self, location: str) -> Optional[str]:
+        """Extract file path from location string."""
+        if not location or location == 'unknown':
+            return None
+        
+        # Handle various location formats
+        # e.g., "auth.py:42", "src/auth.py:42", "b/src/auth.py:42"
+        location = location.replace('b/', '').replace('a/', '')
+        
+        if ':' in location:
+            return location.split(':')[0]
+        
+        return location if '.' in location else None
+    
+    def _extract_line_from_location(self, location: str) -> Optional[int]:
+        """Extract line number from location string."""
+        if not location or location == 'unknown':
+            return None
+        
+        # Extract line number after colon
+        if ':' in location:
+            try:
+                return int(location.split(':')[-1])
+            except ValueError:
+                return None
+        
+        return None
+    
+    def _generate_fix_prompt_for_issue(self, issue: Dict[str, Any]) -> str:
+        """Generate an AI IDE prompt for fixing a specific issue."""
+        location = issue.get('location', 'the code')
+        title = issue.get('title', 'the issue')
+        
+        # Create specific prompts based on issue type
+        if 'SQL' in title or 'injection' in title.lower():
+            return f"""Fix the SQL injection vulnerability in {location}.
+
+Current issue: {title}
+
+Steps:
+1. Find the SQL query construction
+2. Replace string formatting/concatenation with parameterized queries
+3. Use prepared statements or query builders
+4. Ensure all user inputs are properly escaped
+
+Example fix:
+# Bad: query = f"SELECT * FROM users WHERE id = {{user_id}}"
+# Good: query = "SELECT * FROM users WHERE id = ?"
+# Then: cursor.execute(query, (user_id,))"""
+        
+        elif 'hardcoded' in title.lower() or 'secret' in title.lower() or 'credential' in title.lower():
+            return f"""Remove the hardcoded secret/credential in {location}.
+
+Current issue: {title}
+
+Steps:
+1. Identify the hardcoded value
+2. Move it to environment variables or a secure config
+3. Use os.getenv() or a secrets management service
+4. Update deployment configuration
+
+Example fix:
+# Bad: api_key = "sk-1234567890"
+# Good: api_key = os.getenv('API_KEY')"""
+        
+        elif 'error' in title.lower() or 'exception' in title.lower():
+            return f"""Improve error handling in {location}.
+
+Current issue: {title}
+
+Steps:
+1. Replace bare except clauses with specific exceptions
+2. Add proper error logging
+3. Ensure errors are handled gracefully
+4. Add appropriate error messages for users
+
+Example fix:
+# Bad: except: pass
+# Good: except (ValueError, KeyError) as e:
+#         logger.error(f"Failed to process: {{e}}")
+#         raise ProcessingError("Invalid input data") from e"""
+        
+        else:
+            # Generic fix prompt
+            remediation = issue.get('remediation', 'Apply the recommended fix')
+            return f"""Fix the issue in {location}.
+
+Issue: {title}
+Required Action: {remediation}
+
+Steps:
+1. Locate the problematic code
+2. Apply the recommended fix
+3. Test the changes
+4. Ensure no regressions"""
     
     def _format_structured_report(self, report: Dict[str, Any]) -> str:
         """Format the structured analysis report for display with OWASP mapping and gap analysis."""
