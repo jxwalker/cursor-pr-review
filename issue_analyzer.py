@@ -59,6 +59,8 @@ class Issue:
     sources: List[str] = field(default_factory=list)  # Which tools found this issue
     code_snippet: Optional[str] = None
     root_cause: Optional[str] = None
+    owasp_category: Optional[str] = None  # OWASP Top 10 mapping
+    confidence: float = 1.0  # Confidence level (0.0-1.0)
     
     @classmethod
     def create_id(cls, location: IssueLocation, category: IssueCategory, title: str) -> str:
@@ -78,9 +80,26 @@ class Issue:
             self.sources.append(source)
 
 class SecurityDetector:
-    """Enhanced security pattern detection."""
+    """Enhanced security pattern detection with OWASP Top 10 mapping."""
     
     def __init__(self):
+        # OWASP Top 10 2021 mapping
+        self.owasp_mapping = {
+            'sql_injection': 'A03-Injection',
+            'xss_vulnerability': 'A03-Injection', 
+            'command_injection': 'A03-Injection',
+            'hardcoded_secrets': 'A02-Cryptographic-Failures',
+            'crypto_issues': 'A02-Cryptographic-Failures',
+            'unsafe_functions': 'A06-Vulnerable-Components',
+            'access_control': 'A01-Broken-Access-Control',
+            'auth_failures': 'A07-Authentication-Failures',
+            'logging_failures': 'A09-Logging-Monitoring-Failures',
+            'ssrf': 'A10-Server-Side-Request-Forgery',
+            'insecure_design': 'A04-Insecure-Design',
+            'security_misconfiguration': 'A05-Security-Misconfiguration',
+            'integrity_failures': 'A08-Software-Data-Integrity-Failures'
+        }
+        
         self.patterns = {
             # Input validation issues
             'sql_injection': [
@@ -140,7 +159,9 @@ class SecurityDetector:
                             remediation=self._get_remediation(category),
                             code_snippet=line.strip(),
                             root_cause=f"Use of potentially unsafe pattern: {category}",
-                            sources=["security_detector"]
+                            sources=["security_detector"],
+                            owasp_category=self.owasp_mapping.get(category, "Security-General"),
+                            confidence=0.9 if 'injection' in category else 0.8
                         )
                         issues.append(issue)
         
@@ -236,25 +257,76 @@ class ErrorHandlingDetector:
         return 'Follow proper error handling practices'
 
 class IssueAggregator:
-    """Aggregates and deduplicates issues from multiple sources."""
+    """Aggregates and deduplicates issues from multiple sources with gap analysis."""
     
     def __init__(self):
         self.issues: Dict[str, Issue] = {}
+        self.source_stats: Dict[str, int] = {}
+        self.duplicates_found: List[Dict[str, str]] = []
     
     def add_issues(self, issues: List[Issue], source: str) -> None:
-        """Add issues from a specific source, merging duplicates."""
+        """Add issues from a specific source, merging duplicates with enhanced tracking."""
+        self.source_stats[source] = len(issues)
+        
         for issue in issues:
             existing = self.issues.get(issue.id)
             if existing:
-                # Merge with existing issue
+                # Track duplicate for gap analysis
+                self.duplicates_found.append({
+                    'id': issue.id,
+                    'original_source': existing.sources[0] if existing.sources else 'unknown',
+                    'duplicate_source': source,
+                    'location': str(issue.location)
+                })
+                
+                # Merge with existing issue - improve confidence if multiple tools agree
                 existing.add_source(source)
-                # Enhance description with additional sources
+                existing.confidence = min(1.0, existing.confidence + 0.1)
+                
+                # Enhance description with source attribution
                 if source not in existing.description:
-                    existing.description += f" (also found by {source})"
+                    existing.description += f" (confirmed by {source})"
             else:
-                # New issue
+                # New issue - potential gap in other tools
                 issue.add_source(source)
                 self.issues[issue.id] = issue
+    
+    def get_gap_analysis(self) -> Dict[str, Any]:
+        """Analyze gaps between different detection tools."""
+        total_sources = len(self.source_stats)
+        if total_sources < 2:
+            return {'message': 'Need multiple sources for gap analysis'}
+        
+        # Find issues detected by only one tool
+        single_source_issues = []
+        multi_source_issues = []
+        
+        for issue in self.issues.values():
+            if len(issue.sources) == 1:
+                single_source_issues.append({
+                    'id': issue.id,
+                    'location': str(issue.location),
+                    'source': issue.sources[0],
+                    'category': issue.category.value,
+                    'severity': issue.severity.value,
+                    'title': issue.title
+                })
+            else:
+                multi_source_issues.append({
+                    'id': issue.id,
+                    'location': str(issue.location),
+                    'sources': issue.sources,
+                    'confidence': issue.confidence
+                })
+        
+        return {
+            'source_stats': self.source_stats,
+            'duplicates_found': len(self.duplicates_found),
+            'single_source_issues': single_source_issues,
+            'multi_source_issues': multi_source_issues,
+            'coverage_gaps': len(single_source_issues),
+            'consensus_issues': len(multi_source_issues)
+        }
     
     def get_issues_by_category(self) -> Dict[IssueCategory, List[Issue]]:
         """Get issues organized by category."""
@@ -407,8 +479,9 @@ class EnhancedReviewAnalyzer:
         )
     
     def _generate_structured_report(self) -> Dict[str, Any]:
-        """Generate structured review report with 3 main sections."""
+        """Generate structured review report with 3 main sections, OWASP mapping, and gap analysis."""
         categorized = self.aggregator.get_issues_by_category()
+        gap_analysis = self.aggregator.get_gap_analysis()
         
         # Build the structured report
         report = {
@@ -419,17 +492,70 @@ class EnhancedReviewAnalyzer:
                 'other_issues': len(categorized[IssueCategory.PERFORMANCE]) + 
                               len(categorized[IssueCategory.CODE_QUALITY]) + 
                               len(categorized[IssueCategory.TESTING]) + 
-                              len(categorized[IssueCategory.OTHER])
+                              len(categorized[IssueCategory.OTHER]),
+                'owasp_categories': self._get_owasp_summary(categorized[IssueCategory.SECURITY]),
+                'confidence_avg': self._calculate_avg_confidence()
             },
             'sections': {
-                'security': self._format_issues_section(categorized[IssueCategory.SECURITY], "Security Issues"),
+                'security': self._format_security_section(categorized[IssueCategory.SECURITY]),
                 'error_handling': self._format_issues_section(categorized[IssueCategory.ERROR_HANDLING], "Error Handling Issues"),
                 'other': self._format_other_issues_section(categorized)
             },
-            'source_attribution': self._generate_source_attribution()
+            'source_attribution': self._generate_source_attribution(),
+            'gap_analysis': gap_analysis
         }
         
         return report
+    
+    def _get_owasp_summary(self, security_issues: List[Issue]) -> Dict[str, int]:
+        """Generate summary of OWASP Top 10 categories found."""
+        owasp_counts = {}
+        for issue in security_issues:
+            if issue.owasp_category:
+                owasp_counts[issue.owasp_category] = owasp_counts.get(issue.owasp_category, 0) + 1
+        return owasp_counts
+    
+    def _calculate_avg_confidence(self) -> float:
+        """Calculate average confidence score across all issues."""
+        issues = self.aggregator.get_all_issues()
+        if not issues:
+            return 0.0
+        return sum(issue.confidence for issue in issues) / len(issues)
+    
+    def _format_security_section(self, security_issues: List[Issue]) -> Dict[str, Any]:
+        """Format security section with OWASP mapping."""
+        if not security_issues:
+            return {
+                'title': 'Security Issues',
+                'count': 0,
+                'issues': [],
+                'message': '✅ No security issues found',
+                'owasp_summary': {}
+            }
+        
+        formatted_issues = []
+        for issue in security_issues:
+            formatted_issue = {
+                'id': issue.id,
+                'title': issue.title,
+                'description': issue.description,
+                'severity': issue.severity.value,
+                'location': str(issue.location),
+                'remediation': issue.remediation,
+                'root_cause': issue.root_cause,
+                'sources': issue.sources,
+                'code_snippet': issue.code_snippet,
+                'owasp_category': issue.owasp_category,
+                'confidence': issue.confidence
+            }
+            formatted_issues.append(formatted_issue)
+        
+        return {
+            'title': 'Security Issues',
+            'count': len(security_issues),
+            'issues': formatted_issues,
+            'owasp_summary': self._get_owasp_summary(security_issues)
+        }
     
     def _format_issues_section(self, issues: List[Issue], section_title: str) -> Dict[str, Any]:
         """Format a section of issues with detailed information."""

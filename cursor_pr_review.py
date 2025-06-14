@@ -214,36 +214,51 @@ def load_prompt_template(prompt_name: str) -> str:
 
 def get_default_prompt() -> str:
     """Get the enhanced default prompt template based on self-improvement recommendations."""
-    return """Please conduct a comprehensive code review with the following structure:
+    return """Thoroughly scan for security vulnerabilities, explicitly listing OWASP Top 10 issues if found. Clearly flag all error handling concerns, including missing, inadequate, or incorrect try-except blocks and improper error propagation. When security or error handling issues are found, cite the affected function and line number. If security or error handling issues were already raised by another tool (e.g., CodeRabbit, GitHub AI), de-duplicate your response by referencing the original finding, NOT repeating the explanation.
 
 ## 1. SECURITY ISSUES
-Identify and detail all security vulnerabilities:
+Conduct comprehensive OWASP Top 10 security analysis:
+- **A01: Broken Access Control** - Authorization bypass, privilege escalation
+- **A02: Cryptographic Failures** - Weak encryption, exposed sensitive data
+- **A03: Injection** - SQL, NoSQL, OS command, LDAP injection
+- **A04: Insecure Design** - Missing security controls, threat modeling gaps
+- **A05: Security Misconfiguration** - Default configs, incomplete setups
+- **A06: Vulnerable Components** - Outdated libraries, known vulnerabilities
+- **A07: Authentication Failures** - Weak authentication, session management
+- **A08: Software Integrity Failures** - Unsigned updates, insecure CI/CD
+- **A09: Logging/Monitoring Failures** - Insufficient logging, delayed detection
+- **A10: Server-Side Request Forgery** - SSRF vulnerabilities
+
+Additional security checks:
 - Input validation issues (SQL injection, XSS, command injection)
 - Hardcoded secrets and credentials
 - Unsafe function usage (eval, exec, pickle.loads)
 - Cryptographic weaknesses
-- Authentication/authorization flaws
 
 For each security issue:
 - **Root Cause**: Explain what makes this vulnerable
-- **Location**: Specify file and line number
+- **Location**: Specify file and line number (e.g., auth.py:42)
+- **OWASP Category**: Map to relevant OWASP Top 10 item
 - **Impact**: Describe potential exploitation
 - **Remediation**: Provide specific fix instructions
 - **Severity**: Rate as CRITICAL/ERROR/WARNING
+- **Sources**: List all tools that detected this issue
 
 ## 2. ERROR HANDLING ISSUES
-Analyze error handling patterns:
+Systematically analyze error handling patterns:
 - Bare except clauses without exception types
-- Exceptions caught and ignored silently
+- Exceptions caught and ignored silently (except + pass/continue)
 - Missing error logging in exception handlers
 - Improper exception propagation
 - Missing validation for external inputs
+- Inadequate error recovery mechanisms
 
 For each error handling issue:
 - **Root Cause**: Why this is problematic
-- **Location**: File and line number
+- **Location**: File and line number (e.g., processor.py:156)
 - **Remediation**: How to improve error handling
 - **Severity**: Rate as ERROR/WARNING/SUGGESTION
+- **Sources**: List all tools that detected this issue
 
 ## 3. OTHER ISSUES
 Cover remaining code quality concerns:
@@ -253,11 +268,18 @@ Cover remaining code quality concerns:
 - Architectural or design pattern violations
 - Documentation gaps
 
-## SOURCE ATTRIBUTION
-When referencing findings from other tools:
-- **CodeRabbit findings**: Acknowledge and build upon CodeRabbit analysis
-- **GitHub AI findings**: Reference GitHub AI recommendations
-- **Cross-validation**: Note when multiple tools found the same issue
+## DEDUPLICATION AND SOURCE ATTRIBUTION
+Before flagging an issue, check if the same file/line/function was already flagged by GitHub AI/CodeRabbit for the same issue type:
+- If duplicate found: Reference original tool's warning, don't repeat explanation
+- If enhancement possible: Add "Building on CodeRabbit's finding..." with additional context
+- For each reported issue, append source attribution: `Sources: [CodeRabbit, GitHubAI, OurTool]`
+- In summary, list each unique issue once with all detecting sources
+
+## GAP ANALYSIS
+Explicitly identify gaps between tools:
+- Issues found by our analysis but missed by CodeRabbit/GitHub AI
+- Issues mentioned by other tools but with unclear context (provide clarification)
+- Mismatches in issue counts between tools (investigate discrepancies)
 
 ## FORMATTING REQUIREMENTS
 - Use clear headings for each section
@@ -265,6 +287,7 @@ When referencing findings from other tools:
 - Include code snippets when relevant
 - Prioritize issues by severity
 - Give actionable remediation steps
+- Always include source attribution
 
 If no issues are found in a section, state: "✅ No [category] issues detected"
 """
@@ -603,7 +626,7 @@ class APIClient:
         return merged_comments
     
     def _format_structured_report(self, report: Dict[str, Any]) -> str:
-        """Format the structured analysis report for display."""
+        """Format the structured analysis report for display with OWASP mapping and gap analysis."""
         output = ["## 🔍 Enhanced Code Analysis Results"]
         output.append("")
         
@@ -612,6 +635,16 @@ class APIClient:
         output.append(f"• 🔒 Security: {summary['security_issues']} issues")
         output.append(f"• ⚠️ Error Handling: {summary['error_handling_issues']} issues")
         output.append(f"• 📋 Other: {summary['other_issues']} issues")
+        
+        # Add OWASP summary if available
+        if summary.get('owasp_categories'):
+            output.append(f"• 🛡️ OWASP Categories: {len(summary['owasp_categories'])} types found")
+        
+        # Add confidence score
+        if 'confidence_avg' in summary:
+            confidence_pct = int(summary['confidence_avg'] * 100)
+            output.append(f"• 📊 Confidence: {confidence_pct}%")
+        
         output.append("")
         
         # Format each section
@@ -620,11 +653,27 @@ class APIClient:
                 output.append(f"### {section_data['title']}")
                 output.append("")
                 
+                # Add OWASP summary for security section
+                if section_name == 'security' and section_data.get('owasp_summary'):
+                    output.append("**OWASP Top 10 Categories:**")
+                    for owasp_cat, count in section_data['owasp_summary'].items():
+                        output.append(f"• {owasp_cat}: {count} issue{'s' if count != 1 else ''}")
+                    output.append("")
+                
                 for issue in section_data['issues']:
                     output.append(f"**{issue['severity'].upper()}**: {issue['title']}")
                     output.append(f"📍 Location: {issue['location']}")
                     output.append(f"📝 Description: {issue['description']}")
                     output.append(f"🔧 Remediation: {issue['remediation']}")
+                    
+                    # Add OWASP category for security issues
+                    if issue.get('owasp_category'):
+                        output.append(f"🛡️ OWASP: {issue['owasp_category']}")
+                    
+                    # Add confidence score
+                    if issue.get('confidence'):
+                        confidence_pct = int(issue['confidence'] * 100)
+                        output.append(f"📊 Confidence: {confidence_pct}%")
                     
                     if issue['sources']:
                         sources_str = ", ".join(issue['sources'])
@@ -638,6 +687,20 @@ class APIClient:
                 output.append(f"### {section_data['title']}")
                 output.append(section_data.get('message', f"✅ No issues found"))
                 output.append("")
+        
+        # Add gap analysis
+        if report.get('gap_analysis') and 'source_stats' in report['gap_analysis']:
+            gap = report['gap_analysis']
+            output.append("### 🔍 Gap Analysis")
+            output.append(f"• **Coverage gaps**: {gap.get('coverage_gaps', 0)} issues found by only one tool")
+            output.append(f"• **Consensus issues**: {gap.get('consensus_issues', 0)} issues confirmed by multiple tools")
+            output.append(f"• **Duplicates prevented**: {gap.get('duplicates_found', 0)}")
+            
+            if gap.get('single_source_issues'):
+                output.append("\n**Tool-specific findings:**")
+                for unique_issue in gap['single_source_issues'][:3]:  # Show top 3
+                    output.append(f"• {unique_issue['source']}: {unique_issue['title']} ({unique_issue['location']})")
+            output.append("")
         
         # Add source attribution
         if report.get('source_attribution'):

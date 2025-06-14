@@ -66,7 +66,9 @@ class TestIssue:
             category=IssueCategory.SECURITY,
             severity=IssueSeverity.ERROR,
             location=location,
-            remediation="Fix it"
+            remediation="Fix it",
+            owasp_category="A03-Injection",
+            confidence=0.9
         )
         
         issue.add_source("detector1")
