@@ -66,6 +66,15 @@ Your task is to review this code with EXTREME prejudice against common AI-genera
 7. SPECIFIC ACTIONABLE FIXES
    Concrete steps to fix the worst issues.
 
+## OUTPUT REQUIREMENTS:
+
+For EVERY issue you identify, you MUST include:
+- **Location**: EXACT file path and line number as `filename.py:line_number` (e.g., `auth.py:42`)
+- **Issue**: Clear description of what's wrong
+- **Fix**: Specific code or action to fix it
+
+DO NOT report issues without specific locations. If you can't identify the exact location from the diff, don't report it.
+
 ## CRITICAL RULES:
 
 1. BE MERCILESS about mocks, stubs, or fakes in production code. These are NEVER acceptable.

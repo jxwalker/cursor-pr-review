@@ -253,6 +253,7 @@ def get_default_prompt() -> str:
 3. **PERFORMANCE ANALYSIS** - Quantify bottlenecks (e.g., O(n²) complexity, unnecessary I/O)
 4. **NO DUPLICATES** - If CodeRabbit/GitHub AI found it, reference don't repeat
 5. **UNIQUE ISSUES ONLY** - Each issue appears exactly once in the summary
+6. **LOCATION FORMAT** - ALWAYS specify exact location as `filename.py:line_number` (e.g., `vulnerable_code.py:23`)
 
 ## 1. SECURITY VULNERABILITIES (OWASP Top 10 Compliance)
 Review for security vulnerabilities, ENSURING every finding maps to OWASP Top 10:
@@ -947,13 +948,16 @@ class APIClient:
             
             # Parse AI comments and add them to the analyzer for final deduplication
             if ai_comments:
+                logger.debug(f"Processing {len(ai_comments)} AI comments")
                 # Convert AI comments to Issue format and add to analyzer
                 ai_issues = self._convert_ai_comments_to_issues(ai_comments)
+                logger.debug(f"Converted to {len(ai_issues)} Issue objects")
                 analyzer.aggregator.add_issues(ai_issues, f"{self.config.ai_provider}_ai")
                 
                 # Regenerate final report with all deduplicated issues
                 analysis_report = analyzer._generate_structured_report()
             
+            logger.debug(f"Final report has {analysis_report['summary']['total_issues']} total issues")
             # Convert the final deduplicated report to comments format
             return self._convert_report_to_comments(analysis_report)
         
@@ -1852,57 +1856,84 @@ Steps:
     def _parse_ai_analysis(self, analysis: str) -> List[Dict[str, Any]]:
         """Parse AI analysis into structured review comments."""
         comments = []
-
-        # Enhanced parsing - look for various types of issues
-        lines = analysis.split('\n')
-        current_comment = ""
-        severity = "info"
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                if current_comment:
-                    comments.append({
-                        'body': current_comment.strip(),
-                        'severity': severity,
-                        'path': None,
-                        'line': None
-                    })
-                    current_comment = ""
-                    severity = "info"
+        
+        # Split into sections by double newlines or numbered items
+        sections = re.split(r'\n\n|\n(?=\d+\.\s)', analysis)
+        
+        for section in sections:
+            section = section.strip()
+            if not section:
                 continue
-
-            # Detect severity levels
-            if any(word in line.lower() for word in ['critical', 'severe', 'security', 'vulnerability']):
-                severity = "critical"
-            elif any(word in line.lower() for word in ['error', 'bug', 'issue', 'problem']):
-                severity = "error"
-            elif any(word in line.lower() for word in ['warning', 'potential', 'consider']):
-                severity = "warning"
-            elif any(word in line.lower() for word in ['suggestion', 'improve', 'optimize']):
-                severity = "suggestion"
-
-            # Look for actionable feedback
-            if any(keyword in line.lower() for keyword in [
-                'issue', 'problem', 'bug', 'error', 'warning', 'critical',
-                'security', 'vulnerability', 'consider', 'suggestion',
-                'improve', 'optimize', 'refactor', 'performance'
-            ]):
-                if current_comment:
-                    current_comment += " " + line
-                else:
-                    current_comment = line
-
-        # Add final comment if exists
-        if current_comment:
-            comments.append({
-                'body': current_comment.strip(),
-                'severity': severity,
-                'path': None,
-                'line': None
-            })
-
+                
+            # Try to extract structured issue information
+            issue_data = self._extract_issue_from_section(section)
+            if issue_data:
+                comments.append(issue_data)
+        
         return comments
+    
+    def _extract_issue_from_section(self, section: str) -> Optional[Dict[str, Any]]:
+        """Extract structured issue data from a section of AI analysis."""
+        # Skip non-issue sections
+        if not any(keyword in section.lower() for keyword in [
+            'issue', 'problem', 'bug', 'error', 'warning', 'critical',
+            'security', 'vulnerability', 'consider', 'suggestion',
+            'improve', 'optimize', 'refactor', 'performance', 'fix', 'found'
+        ]):
+            return None
+        
+        # Extract location patterns
+        location_patterns = [
+            r'(?:in|at|file)\s+`?([a-zA-Z0-9_/.-]+\.py)(?::([0-9]+))?`?',
+            r'`([a-zA-Z0-9_/.-]+\.py)(?::([0-9]+))?`',
+            r'\b([a-zA-Z0-9_/.-]+\.py):([0-9]+)\b',
+            r'line\s+([0-9]+)\s+(?:of|in)\s+([a-zA-Z0-9_/.-]+\.py)',
+        ]
+        
+        file_path = None
+        line_number = None
+        
+        for pattern in location_patterns:
+            match = re.search(pattern, section)
+            if match:
+                if 'line' in pattern:
+                    line_number = int(match.group(1))
+                    file_path = match.group(2)
+                else:
+                    file_path = match.group(1)
+                    if match.lastindex >= 2 and match.group(2):
+                        line_number = int(match.group(2))
+                break
+        
+        # Extract severity
+        severity = "info"
+        if any(word in section.lower() for word in ['critical', 'severe', 'security', 'vulnerability', 'injection', 'hardcoded']):
+            severity = "critical"
+        elif any(word in section.lower() for word in ['error', 'bug', 'issue', 'problem', 'fail']):
+            severity = "error"
+        elif any(word in section.lower() for word in ['warning', 'potential', 'consider', 'should']):
+            severity = "warning"
+        elif any(word in section.lower() for word in ['suggestion', 'improve', 'optimize', 'could']):
+            severity = "suggestion"
+        
+        # Extract title (first line or first sentence)
+        lines = section.split('\n')
+        title = lines[0].strip()
+        # Remove common prefixes
+        title = re.sub(r'^\d+\.\s*', '', title)  # Remove numbering
+        title = re.sub(r'^\*\*(.+)\*\*', r'\1', title)  # Remove bold
+        title = re.sub(r'^(Issue|Problem|Error|Warning|Bug):\s*', '', title, flags=re.IGNORECASE)
+        
+        # Build the comment body
+        body = section.strip()
+        
+        return {
+            'body': body,
+            'severity': severity,
+            'path': file_path,
+            'line': line_number,
+            'title': title[:100]  # Limit title length
+        }
 
     @retry_on_failure(max_retries=3, delay=1.0)
     def get_github_ai_prompt(self, repo: str, pr_number: str) -> str:
