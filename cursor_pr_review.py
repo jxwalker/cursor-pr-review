@@ -11,7 +11,7 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 from dataclasses import dataclass, asdict
 
 import requests
@@ -1213,9 +1213,7 @@ def create_coderabbit_config(config: ReviewConfig) -> Dict[str, Any]:
                 'enabled': config.coderabbit_auto_approve,
                 'threshold': config.coderabbit_threshold
             },
-            'path_filters': {
-                'ignore': ['*.md', 'LICENSE', '*.txt']
-            }
+            'path_filters': ['*.md', 'LICENSE', '*.txt']
         },
         'model': {
             'provider': config.ai_provider,
@@ -1249,6 +1247,104 @@ def save_coderabbit_config(config: ReviewConfig) -> None:
         
     except OSError as e:
         raise ConfigError(f"Failed to save CodeRabbit config: {e}", "Check permissions")
+
+def setup_github_secrets(config: ReviewConfig) -> None:
+    """Configure GitHub repository secrets for automated workflows."""
+    logger.info("🔐 Setting up GitHub repository secrets...")
+    
+    # Determine which AI API key to set based on provider
+    ai_key_name = "OPENAI_API_KEY" if config.ai_provider == "openai" else "ANTHROPIC_API_KEY"
+    
+    secrets_to_set = [
+        ("GITHUB_TOKEN", config.github_token, "GitHub API access token"),
+        (ai_key_name, config.ai_key, f"{config.ai_provider.title()} API key for AI analysis")
+    ]
+    
+    try:
+        # Check if gh CLI is available
+        result = subprocess.run(['gh', '--version'], capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("GitHub CLI (gh) not found - secrets must be set manually")
+            print_manual_secret_instructions(config, secrets_to_set)
+            return
+        
+        # Check if user is authenticated
+        result = subprocess.run(['gh', 'auth', 'status'], capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("Not authenticated with GitHub CLI")
+            print_manual_secret_instructions(config, secrets_to_set)
+            return
+        
+        # Set each secret
+        success_count = 0
+        for secret_name, secret_value, _ in secrets_to_set:
+            try:
+                logger.info(f"Setting {secret_name}...")
+                result = subprocess.run([
+                    'gh', 'secret', 'set', secret_name,
+                    '--body', secret_value,
+                    '--repo', config.repo
+                ], capture_output=True, text=True, timeout=30)
+                
+                if result.returncode == 0:
+                    logger.info(f"✅ {secret_name} configured successfully")
+                    success_count += 1
+                else:
+                    logger.error(f"❌ Failed to set {secret_name}: {result.stderr}")
+                    
+            except subprocess.TimeoutExpired:
+                logger.error(f"❌ Timeout setting {secret_name}")
+            except Exception as e:
+                logger.error(f"❌ Error setting {secret_name}: {e}")
+        
+        if success_count == len(secrets_to_set):
+            logger.info("🎉 All GitHub secrets configured successfully!")
+            logger.info("Your GitHub Actions workflow is now ready to run automatically.")
+        else:
+            logger.warning(f"⚠️  Only {success_count}/{len(secrets_to_set)} secrets were set successfully")
+            print_manual_secret_instructions(config, secrets_to_set)
+            
+    except FileNotFoundError:
+        logger.warning("GitHub CLI (gh) not installed - secrets must be set manually")
+        print_manual_secret_instructions(config, secrets_to_set)
+    except Exception as e:
+        logger.error(f"Error setting up GitHub secrets: {e}")
+        print_manual_secret_instructions(config, secrets_to_set)
+
+def print_manual_secret_instructions(config: ReviewConfig, secrets_to_set: List[Tuple[str, str, str]]) -> None:
+    """Print manual instructions for setting up GitHub secrets."""
+    ai_key_name = "OPENAI_API_KEY" if config.ai_provider == "openai" else "ANTHROPIC_API_KEY"
+    
+    print("\n" + "="*80)
+    print("📋 MANUAL SETUP REQUIRED: GitHub Repository Secrets")
+    print("="*80)
+    print(f"\nTo complete setup, add these secrets to your GitHub repository:")
+    print(f"👉 https://github.com/{config.repo}/settings/secrets/actions")
+    print("\n🔐 Secrets to add:")
+    
+    for secret_name, secret_value, description in secrets_to_set:
+        # Mask the secret value for security
+        if len(secret_value) > 10:
+            masked_value = secret_value[:4] + "*" * (len(secret_value) - 8) + secret_value[-4:]
+        else:
+            masked_value = "*" * len(secret_value)
+        
+        print(f"\n• Name: {secret_name}")
+        print(f"  Value: {masked_value}")
+        print(f"  Description: {description}")
+    
+    print(f"\n📖 Steps:")
+    print(f"1. Go to: https://github.com/{config.repo}/settings/secrets/actions")
+    print(f"2. Click 'New repository secret'")
+    print(f"3. Add each secret above")
+    print(f"4. Your workflow will then work automatically!")
+    
+    print(f"\n💡 Alternative - Use GitHub CLI:")
+    print(f"   gh auth login")
+    print(f"   gh secret set GITHUB_TOKEN --body 'your-github-token' --repo {config.repo}")
+    print(f"   gh secret set {ai_key_name} --body 'your-ai-key' --repo {config.repo}")
+    
+    print("="*80)
 
 # Single-responsibility setup functions 
 def prompt_github_token() -> str:
@@ -1653,7 +1749,12 @@ def setup() -> None:
         save_github_workflow(config)
         save_coderabbit_config(config)
         
-        logger.info("Setup completed successfully")
+        # Setup GitHub secrets for automated workflows
+        setup_github_secrets(config)
+        
+        logger.info("✅ Setup completed successfully!")
+        logger.info("🚀 Your AI PR review system is ready to go!")
+        logger.info(f"📋 Next: Create a PR in {config.repo} to test the automation")
         
     except KeyboardInterrupt:
         logger.info("Setup cancelled")
