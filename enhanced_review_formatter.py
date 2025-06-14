@@ -18,15 +18,19 @@ class EnhancedReviewFormatter:
     def _organize_feedback(self, comments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Organize feedback from all sources into a structured format."""
         organized = {
-            'blocking_issues': [],
-            'security_issues': [],
-            'warnings': [],
-            'suggestions': [],
+            'production_blocking': [],
+            'production_security': [],
+            'production_warnings': [],
+            'production_suggestions': [],
+            'test_issues': [],
+            'test_improvements': [],
             'coderabbit_feedback': [],
             'copilot_feedback': [],
             'codeql_feedback': [],
             'ai_insights': [],
-            'total_issues': 0
+            'total_issues': 0,
+            'production_issues': 0,
+            'test_issues_count': 0
         }
         
         for comment in comments:
@@ -47,15 +51,27 @@ class EnhancedReviewFormatter:
             elif 'AI Analysis' in body:
                 organized['ai_insights'].append(item)
             
-            # Classify by severity and type
-            if self._is_blocking_issue(body, comment):
-                organized['blocking_issues'].append(item)
-            elif self._is_security_issue(body):
-                organized['security_issues'].append(item)
-            elif self._is_warning(body, comment):
-                organized['warnings'].append(item)
+            # Determine if this is test-related or production code
+            is_test_file = self._is_test_file(item['location'])
+            
+            if is_test_file:
+                # Test files - issues are not blocking for production
+                organized['test_issues_count'] += 1
+                if self._is_blocking_issue(body, comment) or self._is_security_issue(body):
+                    organized['test_issues'].append(item)
+                else:
+                    organized['test_improvements'].append(item)
             else:
-                organized['suggestions'].append(item)
+                # Production code - issues can be blocking
+                organized['production_issues'] += 1
+                if self._is_blocking_issue(body, comment):
+                    organized['production_blocking'].append(item)
+                elif self._is_security_issue(body):
+                    organized['production_security'].append(item)
+                elif self._is_warning(body, comment):
+                    organized['production_warnings'].append(item)
+                else:
+                    organized['production_suggestions'].append(item)
         
         return organized
     
@@ -93,6 +109,19 @@ class EnhancedReviewFormatter:
         """Check if this is a warning level issue."""
         severity = comment.get('severity', 'info')
         return severity == 'warning' or 'WARNING:' in body
+    
+    def _is_test_file(self, location: str) -> bool:
+        """Check if the issue is in a test file."""
+        test_indicators = [
+            'test_', '_test.py', '/test/', '/tests/', 
+            'spec_', '_spec.py', '/spec/', '/specs/',
+            'pytest', 'unittest', 'conftest.py',
+            'test.py', 'tests.py', '_test_', 'test/',
+            'demo.py', '_demo.py', 'example.py', '_example.py'
+        ]
+        
+        location_lower = location.lower()
+        return any(indicator in location_lower for indicator in test_indicators)
     
     def _extract_actionable_item(self, comment: Dict[str, Any]) -> Dict[str, str]:
         """Extract actionable information from a comment."""
@@ -237,28 +266,35 @@ class EnhancedReviewFormatter:
         output.append("# 🤖 AI-Powered Code Review Summary")
         output.append("")
         output.append(f"**Total Issues Found:** {organized['total_issues']}")
+        output.append(f"**Production Code Issues:** {organized['production_issues']}")
+        output.append(f"**Test Code Issues:** {organized['test_issues_count']}")
         output.append("")
         
         # Executive Summary
-        blocking_count = len(organized['blocking_issues'])
-        security_count = len(organized['security_issues'])
-        warning_count = len(organized['warnings'])
+        production_blocking = len(organized['production_blocking'])
+        production_security = len(organized['production_security'])
+        test_issues_total = len(organized['test_issues'])
         
-        if blocking_count > 0:
-            output.append("## 🚨 Action Required")
-            output.append(f"**{blocking_count} critical issue(s) must be resolved before merging.**")
-            if security_count > 0:
-                output.append(f"**{security_count} security issue(s) require immediate attention.**")
+        if production_blocking > 0 or production_security > 0:
+            output.append("## 🚨 Production Issues - Action Required")
+            if production_blocking > 0:
+                output.append(f"**{production_blocking} critical production issue(s) must be resolved before merging.**")
+            if production_security > 0:
+                output.append(f"**{production_security} production security issue(s) require immediate attention.**")
         else:
-            output.append("## ✅ Ready to Merge")
-            output.append("No critical issues found! Review suggestions below for improvements.")
+            output.append("## ✅ Production Code Ready")
+            output.append("No critical production issues found! Safe to merge.")
+        
+        if test_issues_total > 0:
+            output.append(f"**📝 Note:** {test_issues_total} test-related issues found (non-blocking for production).")
+        
         output.append("")
         
-        # Critical Issues Section
-        if organized['blocking_issues']:
-            output.append("## 🛑 Critical Issues (Must Fix)")
+        # Production Critical Issues Section
+        if organized['production_blocking']:
+            output.append("## 🛑 Production Critical Issues (Must Fix Before Merge)")
             output.append("")
-            for i, issue in enumerate(organized['blocking_issues'][:5], 1):
+            for i, issue in enumerate(organized['production_blocking'][:5], 1):
                 output.append(f"### {i}. {issue['title']}")
                 output.append(f"**📍 Location:** `{issue['location']}`")
                 output.append(f"**🎯 Type:** {issue['type']}")
@@ -270,11 +306,11 @@ class EnhancedReviewFormatter:
                     output.append("```")
                 output.append("")
         
-        # Security Issues Section
-        if organized['security_issues']:
-            output.append("## 🔒 Security Issues")
+        # Production Security Issues Section
+        if organized['production_security']:
+            output.append("## 🔒 Production Security Issues")
             output.append("")
-            for i, issue in enumerate(organized['security_issues'][:3], 1):
+            for i, issue in enumerate(organized['production_security'][:3], 1):
                 output.append(f"**{i}. {issue['title']}**")
                 output.append(f"- **Location:** `{issue['location']}`")
                 output.append(f"- **Fix:** {issue['remediation']}")
@@ -288,40 +324,76 @@ class EnhancedReviewFormatter:
                 output.append(f"- **{issue['title']}** - {issue['remediation']}")
             output.append("")
         
-        # AI IDE Prompts Section - THIS IS THE KEY PART!
-        output.append("## 🤖 AI IDE Fix Prompts")
-        output.append("")
-        output.append("**Copy these prompts into your AI IDE (Cursor, GitHub Copilot, etc.) to automatically fix issues:**")
-        output.append("")
-        
-        # Generate specific prompts for critical issues
-        if organized['blocking_issues']:
-            output.append("### 🚨 Critical Issue Fixes")
-            for i, issue in enumerate(organized['blocking_issues'][:3], 1):
-                prompt = self._generate_ai_ide_prompt(issue)
-                output.append(f"**{i}. {issue['title']}**")
-                output.append("```")
-                output.append(prompt)
-                output.append("```")
-                output.append("")
-        
-        # Generate prompts for security issues
-        if organized['security_issues']:
-            output.append("### 🔒 Security Fix Prompts")
-            for i, issue in enumerate(organized['security_issues'][:2], 1):
-                prompt = self._generate_ai_ide_prompt(issue)
-                output.append(f"**{i}. {issue['title']}**")
-                output.append("```")
-                output.append(prompt)
-                output.append("```")
-                output.append("")
-        
-        # Improvement Suggestions
-        if organized['warnings'] or organized['suggestions']:
-            output.append("## 💡 Improvement Suggestions")
+        # AI IDE Prompts Section for Production Issues
+        production_critical_issues = organized['production_blocking'] + organized['production_security']
+        if production_critical_issues:
+            output.append("## 🤖 AI IDE Fix Prompts (Production Issues)")
             output.append("")
-            all_suggestions = organized['warnings'] + organized['suggestions']
-            for i, issue in enumerate(all_suggestions[:5], 1):
+            output.append("**Copy these prompts into your AI IDE (Cursor, GitHub Copilot, etc.) to automatically fix production issues:**")
+            output.append("")
+            
+            # Generate specific prompts for production critical issues
+            if organized['production_blocking']:
+                output.append("### 🚨 Critical Production Fixes")
+                for i, issue in enumerate(organized['production_blocking'][:3], 1):
+                    prompt = self._generate_ai_ide_prompt(issue)
+                    output.append(f"**{i}. {issue['title']}**")
+                    output.append("```")
+                    output.append(prompt)
+                    output.append("```")
+                    output.append("")
+            
+            # Generate prompts for production security issues
+            if organized['production_security']:
+                output.append("### 🔒 Production Security Fixes")
+                for i, issue in enumerate(organized['production_security'][:2], 1):
+                    prompt = self._generate_ai_ide_prompt(issue)
+                    output.append(f"**{i}. {issue['title']}**")
+                    output.append("```")
+                    output.append(prompt)
+                    output.append("```")
+                    output.append("")
+        
+        # Test Issues Section (Non-blocking)
+        if organized['test_issues'] or organized['test_improvements']:
+            output.append("## 🧪 Test Code Issues (Non-blocking for Production)")
+            output.append("")
+            output.append("*These issues are in test files and won't block production deployment, but should be addressed for code quality.*")
+            output.append("")
+            
+            if organized['test_issues']:
+                output.append("### 🔧 Test Issues to Address")
+                for i, issue in enumerate(organized['test_issues'][:5], 1):
+                    output.append(f"{i}. **{issue['title']}** (`{issue['location']}`)")
+                    output.append(f"   - Fix: {issue['remediation']}")
+                output.append("")
+            
+            if organized['test_improvements']:
+                output.append("### 📈 Test Improvements")
+                for i, issue in enumerate(organized['test_improvements'][:3], 1):
+                    output.append(f"{i}. **{issue['title']}** - {issue['remediation']}")
+                output.append("")
+            
+            # AI IDE Prompts for Test Issues
+            test_critical_issues = organized['test_issues'][:2]  # Top 2 test issues
+            if test_critical_issues:
+                output.append("### 🤖 AI IDE Prompts for Test Issues")
+                output.append("*Copy these prompts to improve test code quality:*")
+                output.append("")
+                for i, issue in enumerate(test_critical_issues, 1):
+                    prompt = self._generate_test_improvement_prompt(issue)
+                    output.append(f"**{i}. {issue['title']}**")
+                    output.append("```")
+                    output.append(prompt)
+                    output.append("```")
+                    output.append("")
+        
+        # Production Improvement Suggestions
+        production_suggestions = organized['production_warnings'] + organized['production_suggestions']
+        if production_suggestions:
+            output.append("## 💡 Production Code Improvements")
+            output.append("")
+            for i, issue in enumerate(production_suggestions[:5], 1):
                 output.append(f"{i}. **{issue['title']}** - {issue['remediation']}")
             output.append("")
         
@@ -406,3 +478,64 @@ Steps:
 2. Apply the recommended fix: {issue['remediation']}
 3. Test that the fix resolves the issue
 4. Ensure no new issues are introduced"""
+    
+    def _generate_test_improvement_prompt(self, issue: Dict[str, str]) -> str:
+        """Generate an AI IDE prompt for improving test code."""
+        location = issue['location'].replace('b/', '').replace('a/', '')
+        
+        # Create specific prompts for test improvements
+        if "SQL injection" in issue['title'] or "injection" in issue['title'].lower():
+            return f"""Improve test security in {location}:
+
+This test contains potentially unsafe patterns that should be improved for test reliability.
+Issue: {issue['title']}
+
+Steps:
+1. Review the test for secure coding practices
+2. Use proper test data instead of potentially harmful examples
+3. Ensure tests don't introduce real security vulnerabilities
+4. Use mocked/stubbed data for security testing
+
+Note: This is test code, so it won't block production deployment."""
+
+        elif "hardcoded" in issue['title'].lower():
+            return f"""Remove hardcoded values in test {location}:
+
+Tests should use configurable test data instead of hardcoded values.
+Issue: {issue['title']}
+
+Steps:
+1. Replace hardcoded test values with test configuration
+2. Use fixtures or test factories for test data
+3. Consider using pytest fixtures or unittest setUp methods
+4. Make tests more maintainable and reusable
+
+Note: This improves test quality but doesn't block production."""
+
+        elif "error handling" in issue['title'].lower() or "except" in issue['title'].lower():
+            return f"""Improve error handling in test {location}:
+
+Test code should demonstrate proper error handling patterns.
+Issue: {issue['title']}
+
+Steps:
+1. Fix exception handling in test code
+2. Use specific exception types instead of bare except
+3. Add proper assertions for error conditions
+4. Ensure tests properly validate error scenarios
+
+Note: This improves test reliability but doesn't block production."""
+
+        else:
+            return f"""Improve test code quality in {location}:
+
+Issue: {issue['title']}
+Fix: {issue['remediation']}
+
+Steps:
+1. Locate the issue in the test file
+2. Apply the recommended improvement
+3. Ensure tests still pass after the fix
+4. Consider if this improves overall test quality
+
+Note: This is test code improvement - not blocking for production deployment."""
