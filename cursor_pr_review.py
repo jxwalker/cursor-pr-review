@@ -273,8 +273,8 @@ Only report real issues. Be concise. Here's the code to review:
         
         # Check if running in GitHub Actions
         if os.environ.get('GITHUB_ACTIONS') == 'true':
-            # Post as issue comment instead of review (GitHub Actions limitation)
-            self._post_as_issue_comment(repo, pr_number, issues, headers)
+            # Output to GitHub Actions summary instead (permission limitations)
+            self._output_to_actions_summary(repo, pr_number, issues)
             return
             
         # Normal review posting for local runs
@@ -316,26 +316,38 @@ Only report real issues. Be concise. Here's the code to review:
             print(f"❌ Failed to post review: {response.status_code}")
             print(response.json())
             
-    def _post_as_issue_comment(self, repo: str, pr_number: int, issues: List[Dict[str, Any]], headers: Dict[str, str]) -> None:
-        """Post review as issue comment (for GitHub Actions)."""
-        # Build comment body
-        body = "# 🤖 AI Code Review\n\n"
-        body += f"Found {len(issues)} issue(s) in this PR:\n\n"
-        
-        for i, issue in enumerate(issues, 1):
-            body += f"## {i}. {issue['path']}:{issue['line']}\n"
-            body += f"{issue['body']}\n\n"
-            body += "---\n\n"
+    def _output_to_actions_summary(self, repo: str, pr_number: int, issues: List[Dict[str, Any]]) -> None:
+        """Output review to GitHub Actions summary."""
+        summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+        if not summary_file:
+            print("❌ GITHUB_STEP_SUMMARY not found")
+            return
             
-        # Post comment
-        comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-        response = requests.post(comment_url, headers=headers, json={'body': body})
+        # Build summary content
+        content = "# 🤖 AI Code Review\n\n"
+        content += f"Found **{len(issues)}** issue(s) in PR #{pr_number}\n\n"
         
-        if response.status_code == 201:
-            print(f"✅ Posted review as comment with {len(issues)} issues")
-        else:
-            print(f"❌ Failed to post comment: {response.status_code}")
-            print(response.json())
+        # Create a table of issues
+        content += "| File:Line | Issue | Fix |\n"
+        content += "|-----------|-------|-----|\n"
+        
+        for issue in issues:
+            # Extract issue and fix from body
+            body_parts = issue['body'].split('\n\n', 1)
+            issue_desc = body_parts[0].replace('**', '').strip()
+            fix_desc = body_parts[1] if len(body_parts) > 1 else 'See details'
+            
+            content += f"| `{issue['path']}:{issue['line']}` | {issue_desc} | {fix_desc} |\n"
+        
+        content += f"\n\n[View PR #{pr_number}](https://github.com/{repo}/pull/{pr_number})\n"
+        
+        # Write to summary
+        try:
+            with open(summary_file, 'a') as f:
+                f.write(content)
+            print(f"✅ Posted review to Actions summary with {len(issues)} issues")
+        except Exception as e:
+            print(f"❌ Failed to write summary: {e}")
             
     def _post_approval(self, repo: str, pr_number: int) -> None:
         """Post approval when no issues found."""
@@ -343,12 +355,18 @@ Only report real issues. Be concise. Here's the code to review:
         
         # Check if running in GitHub Actions
         if os.environ.get('GITHUB_ACTIONS') == 'true':
-            # Post as comment (can't approve from Actions)
-            comment_url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-            body = "# ✅ AI Code Review\n\nNo issues found! This code looks good to merge. 🚀"
-            response = requests.post(comment_url, headers=headers, json={'body': body})
-            if response.status_code == 201:
-                print("✅ Posted approval comment")
+            # Output to summary (can't approve from Actions)
+            summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+            if summary_file:
+                content = "# ✅ AI Code Review\n\n"
+                content += f"**No issues found!** PR #{pr_number} looks good to merge. 🚀\n\n"
+                content += f"[View PR #{pr_number}](https://github.com/{repo}/pull/{pr_number})\n"
+                try:
+                    with open(summary_file, 'a') as f:
+                        f.write(content)
+                    print("✅ Posted approval to Actions summary")
+                except:
+                    pass
             return
             
         # Normal approval for local runs
