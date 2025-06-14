@@ -212,7 +212,8 @@ class SecurityDetector:
         context_text = ' '.join(context_lines).lower()
         context_indicators = [
             'def _generate_ai_ide_prompt', 'def _generate_test_improvement_prompt',
-            'example fix:', 'steps:\n1.', 'fix:\n#'
+            'example fix:', 'steps:\n1.', 'fix:\n#',
+            'def test_', 'test case', 'assert detect_', 'vulnerable code'
         ]
         
         return any(indicator in context_text for indicator in context_indicators)
