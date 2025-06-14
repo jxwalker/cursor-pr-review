@@ -12,10 +12,9 @@ reviews:
     enabled: false
     threshold: low
   path_filters:
-    ignore:
-    - '*.md'
-    - LICENSE
-    - '*.txt'
+  - '*.md'
+  - LICENSE
+  - '*.txt'
 model:
   provider: openai
   name: gpt-4.1

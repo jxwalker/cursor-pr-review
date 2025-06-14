@@ -414,6 +414,61 @@ def load_config() -> Optional[ReviewConfig]:
             f"Delete {config_file} and run setup again"
         )
 
+def create_config_from_env(repo: str) -> Optional[ReviewConfig]:
+    """Create configuration from environment variables (for GitHub Actions)."""
+    try:
+        # Get required environment variables
+        github_token = os.getenv('GITHUB_TOKEN')
+        openai_key = os.getenv('OPENAI_API_KEY')
+        anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        
+        if not github_token:
+            logger.error("GITHUB_TOKEN environment variable not found")
+            return None
+        
+        # Determine AI provider based on available keys
+        if openai_key:
+            ai_provider = "openai"
+            ai_key = openai_key
+            ai_model = "gpt-4o"  # Default for GitHub Actions
+        elif anthropic_key:
+            ai_provider = "anthropic" 
+            ai_key = anthropic_key
+            ai_model = "claude-3-sonnet-20240229"  # Default for GitHub Actions
+        else:
+            logger.error("Neither OPENAI_API_KEY nor ANTHROPIC_API_KEY found")
+            return None
+        
+        # Create config with defaults suitable for GitHub Actions
+        config = ReviewConfig(
+            github_token=github_token,
+            ai_provider=ai_provider,
+            ai_key=ai_key,
+            ai_model=ai_model,
+            repo=repo,
+            use_coderabbit=True,
+            coderabbit_threshold="medium",
+            coderabbit_auto_approve=False,
+            review_strictness="balanced",
+            auto_request_changes=True,
+            prompt_type="default"
+        )
+        
+        # Load the appropriate prompt template
+        config.prompt_template = load_prompt_template(config.prompt_type)
+        
+        # Validate the config
+        config.validate()
+        
+        logger.info(f"✅ Configuration created from environment variables")
+        logger.info(f"🤖 Using {ai_provider} with model {ai_model}")
+        
+        return config
+        
+    except Exception as e:
+        logger.error(f"Failed to create config from environment: {e}")
+        return None
+
 def save_config(config: ReviewConfig) -> None:
     """Save configuration securely."""
     config_dir = Path.home() / '.cursor-pr-review'
@@ -1802,10 +1857,13 @@ def main():
             repo = sys.argv[2]
             pr_number = sys.argv[3]
 
-            # Load configuration
+            # Load configuration (try local first, then environment)
             config = load_config()
             if not config:
-                raise ConfigError("No configuration found", "Run setup first")
+                # Try to create config from environment variables (for GitHub Actions)
+                config = create_config_from_env(repo)
+                if not config:
+                    raise ConfigError("No configuration found", "Run setup first or set environment variables")
 
             # Perform PR review
             review_pr(config, repo, pr_number)
