@@ -193,7 +193,7 @@ This PR implements the initial phase of CodeRabbit integration.
     
     # Assertions to verify expected behavior
     assert result['github_ai_insights'] == 1, f"Expected 1 GitHub AI insight, got {result['github_ai_insights']}"
-    assert result['coderabbit_patterns'] == 4, f"Expected 4 CodeRabbit patterns, got {result['coderabbit_patterns']}"
+    assert result['coderabbit_patterns'] == 3, f"Expected 3 CodeRabbit patterns, got {result['coderabbit_patterns']}"
     assert result['our_patterns'] == 4, f"Expected 4 our AI review patterns, got {result['our_patterns']}"
     assert result['recommendations'] == 6, f"Expected 6 recommendations, got {result['recommendations']}"
     return result

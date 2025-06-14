@@ -10,6 +10,7 @@ import json
 import logging
 import subprocess
 import time
+import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Union, Tuple
 from dataclasses import dataclass, asdict
@@ -25,15 +26,13 @@ try:
     PROMPT_MANAGER_AVAILABLE = True
 except ImportError:
     PROMPT_MANAGER_AVAILABLE = False
-    logger.warning("Advanced prompt management not available")
 
 # Import enhanced issue analysis system
 try:
-    from issue_analyzer import EnhancedReviewAnalyzer, Issue, IssueCategory, IssueSeverity
+    from issue_analyzer import EnhancedReviewAnalyzer, Issue, IssueCategory, IssueSeverity, IssueLocation
     ENHANCED_ANALYSIS_AVAILABLE = True
 except ImportError:
     ENHANCED_ANALYSIS_AVAILABLE = False
-    logger.warning("Enhanced issue analysis not available")
 
 # Production logging 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -61,6 +60,12 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     return logger
 
 logger = setup_logging()
+
+# Log import availability
+if not PROMPT_MANAGER_AVAILABLE:
+    logger.debug("Advanced prompt management not available")
+if not ENHANCED_ANALYSIS_AVAILABLE:
+    logger.debug("Enhanced issue analysis not available")
 
 # Retry decorator for API calls
 def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
@@ -185,8 +190,8 @@ def load_prompt_template(prompt_name: str) -> str:
             prompt_metadata = manager.get_prompt(prompt_name)
             if prompt_metadata and prompt_metadata.is_active:
                 return prompt_metadata.get_current_content()
-        except Exception as e:
-            logger.warning(f"Failed to load from prompt manager: {e}")
+        except (AttributeError, KeyError, ValueError, OSError) as e:
+            logger.warning(f"Failed to load from prompt manager (will use fallback): {e}")
     
     # Fallback to legacy system
     if prompt_name == 'custom':
@@ -214,82 +219,132 @@ def load_prompt_template(prompt_name: str) -> str:
 
 def get_default_prompt() -> str:
     """Get the enhanced default prompt template based on self-improvement recommendations."""
-    return """Thoroughly scan for security vulnerabilities, explicitly listing OWASP Top 10 issues if found. Clearly flag all error handling concerns, including missing, inadequate, or incorrect try-except blocks and improper error propagation. When security or error handling issues are found, cite the affected function and line number. If security or error handling issues were already raised by another tool (e.g., CodeRabbit, GitHub AI), de-duplicate your response by referencing the original finding, NOT repeating the explanation.
+    return """You are an expert code reviewer. Review code for security vulnerabilities, ensuring OWASP Top 10 compliance. Identify and explicitly describe ALL error-handling paths, including edge cases. Analyze code for potential performance bottlenecks with specific metrics. Avoid duplicating issues already flagged by CodeRabbit, GitHub AI, or other tools - instead reference and build upon them. List distinct issues only once per category in your summary.
 
-## 1. SECURITY ISSUES
-Conduct comprehensive OWASP Top 10 security analysis:
-- **A01: Broken Access Control** - Authorization bypass, privilege escalation
-- **A02: Cryptographic Failures** - Weak encryption, exposed sensitive data
-- **A03: Injection** - SQL, NoSQL, OS command, LDAP injection
-- **A04: Insecure Design** - Missing security controls, threat modeling gaps
-- **A05: Security Misconfiguration** - Default configs, incomplete setups
-- **A06: Vulnerable Components** - Outdated libraries, known vulnerabilities
-- **A07: Authentication Failures** - Weak authentication, session management
-- **A08: Software Integrity Failures** - Unsigned updates, insecure CI/CD
-- **A09: Logging/Monitoring Failures** - Insufficient logging, delayed detection
-- **A10: Server-Side Request Forgery** - SSRF vulnerabilities
+## CRITICAL INSTRUCTIONS
+1. **ENSURE OWASP TOP 10 COMPLIANCE** - Every security finding must map to OWASP categories
+2. **IDENTIFY ALL ERROR PATHS** - Explicitly trace and describe every error-handling scenario
+3. **PERFORMANCE ANALYSIS** - Quantify bottlenecks (e.g., O(n²) complexity, unnecessary I/O)
+4. **NO DUPLICATES** - If CodeRabbit/GitHub AI found it, reference don't repeat
+5. **UNIQUE ISSUES ONLY** - Each issue appears exactly once in the summary
+
+## 1. SECURITY VULNERABILITIES (OWASP Top 10 Compliance)
+Review for security vulnerabilities, ENSURING every finding maps to OWASP Top 10:
+- **A01: Broken Access Control** - Authorization bypass, privilege escalation, path traversal
+- **A02: Cryptographic Failures** - Weak encryption, exposed sensitive data, insecure random
+- **A03: Injection** - SQL, NoSQL, OS command, LDAP, XPath, XML injection
+- **A04: Insecure Design** - Missing security controls, threat modeling gaps, unsafe patterns
+- **A05: Security Misconfiguration** - Default configs, verbose errors, missing headers
+- **A06: Vulnerable Components** - Outdated libraries, known CVEs, unpatched dependencies
+- **A07: Authentication Failures** - Weak passwords, session fixation, timing attacks
+- **A08: Software Integrity Failures** - Unsigned code, insecure deserialization, CI/CD risks
+- **A09: Logging/Monitoring Failures** - Missing audit logs, PII in logs, inadequate alerting
+- **A10: Server-Side Request Forgery** - SSRF, DNS rebinding, internal network access
 
 Additional security checks:
-- Input validation issues (SQL injection, XSS, command injection)
-- Hardcoded secrets and credentials
-- Unsafe function usage (eval, exec, pickle.loads)
-- Cryptographic weaknesses
+- Input validation flaws (length, type, format, range)
+- Hardcoded secrets, API keys, passwords
+- Unsafe functions (eval, exec, pickle, yaml.load)
+- Race conditions and TOCTOU vulnerabilities
+- Cryptographic weaknesses (weak algorithms, bad randomness)
 
-For each security issue:
-- **Root Cause**: Explain what makes this vulnerable
-- **Location**: Specify file and line number (e.g., auth.py:42)
-- **OWASP Category**: Map to relevant OWASP Top 10 item
-- **Impact**: Describe potential exploitation
-- **Remediation**: Provide specific fix instructions
-- **Severity**: Rate as CRITICAL/ERROR/WARNING
-- **Sources**: List all tools that detected this issue
+For each security issue provide:
+- **OWASP Category**: Which OWASP Top 10 item (REQUIRED)
+- **Location**: Exact file:line (e.g., auth.py:42)
+- **Vulnerability**: Specific security flaw
+- **Attack Vector**: How it could be exploited
+- **Impact**: Damage if exploited (data breach, privilege escalation, etc.)
+- **Remediation**: Exact code fix or mitigation
+- **Severity**: CRITICAL/HIGH/MEDIUM/LOW
+- **Detection Source**: [OurAnalysis] or [CodeRabbit+OurAnalysis] etc.
 
-## 2. ERROR HANDLING ISSUES
-Systematically analyze error handling patterns:
-- Bare except clauses without exception types
-- Exceptions caught and ignored silently (except + pass/continue)
-- Missing error logging in exception handlers
-- Improper exception propagation
-- Missing validation for external inputs
-- Inadequate error recovery mechanisms
+## 2. ERROR HANDLING ANALYSIS (All Paths)
+Identify and EXPLICITLY DESCRIBE every error-handling path:
+- Uncaught exceptions and error propagation chains
+- Bare except clauses (except: without specific exception)
+- Silent failures (except: pass/continue without logging)
+- Missing error handling for external calls (API, DB, file I/O)
+- Incomplete error recovery (partial state changes)
+- Error information disclosure (stack traces to users)
+- Missing input validation before processing
 
-For each error handling issue:
-- **Root Cause**: Why this is problematic
-- **Location**: File and line number (e.g., processor.py:156)
-- **Remediation**: How to improve error handling
-- **Severity**: Rate as ERROR/WARNING/SUGGESTION
-- **Sources**: List all tools that detected this issue
+For each error-handling issue:
+- **Error Path**: Trace the complete error flow (function A → B → C)
+- **Location**: File:line where error handling is missing/inadequate
+- **Scenario**: What triggers this error path
+- **Current Behavior**: What happens now (crash, silent fail, corruption)
+- **Risk**: Impact of unhandled error (data loss, security, UX)
+- **Fix**: Specific error handling code to add
+- **Severity**: HIGH/MEDIUM/LOW
+- **Detection Source**: [OurAnalysis] or reference existing finding
 
-## 3. OTHER ISSUES
-Cover remaining code quality concerns:
-- Performance bottlenecks and inefficient algorithms
-- Code maintainability and readability issues
+## 3. PERFORMANCE BOTTLENECKS (With Metrics)
+Analyze code for performance issues with SPECIFIC METRICS:
+- Algorithm complexity (specify Big-O notation)
+- Database queries in loops (N+1 problems)
+- Unnecessary I/O operations (file reads, network calls)
+- Memory leaks and excessive allocations
+- Blocking operations in async code
+- Inefficient data structures
+- Missing caching opportunities
+
+For each performance issue:
+- **Bottleneck Type**: Category of performance issue
+- **Location**: File:line with the issue
+- **Current Performance**: Estimated complexity/impact (e.g., O(n²), 1000 DB queries)
+- **Optimal Performance**: What it should be (e.g., O(n log n), 1 query)
+- **Impact**: User-facing latency, resource usage
+- **Solution**: Specific optimization with code
+- **Severity**: HIGH/MEDIUM/LOW based on impact
+- **Detection Source**: [OurAnalysis] or reference
+
+## 4. OTHER CODE QUALITY ISSUES
+Additional concerns not covered above:
+- Code maintainability and readability
 - Missing or inadequate test coverage
-- Architectural or design pattern violations
+- Architectural anti-patterns
 - Documentation gaps
+- Dead code and unused imports
 
-## DEDUPLICATION AND SOURCE ATTRIBUTION
-Before flagging an issue, check if the same file/line/function was already flagged by GitHub AI/CodeRabbit for the same issue type:
-- If duplicate found: Reference original tool's warning, don't repeat explanation
-- If enhancement possible: Add "Building on CodeRabbit's finding..." with additional context
-- For each reported issue, append source attribution: `Sources: [CodeRabbit, GitHubAI, OurTool]`
-- In summary, list each unique issue once with all detecting sources
+## DEDUPLICATION RULES
+**CRITICAL**: Avoid duplicating findings from other tools:
+1. If CodeRabbit/GitHub AI already found the issue:
+   - Write: "CodeRabbit identified [issue] at [location]. Additionally, ..."
+   - Add ONLY new insights or context
+2. If multiple tools found the same issue:
+   - Write: "Multiple tools detected [issue]: CodeRabbit (security), GitHub AI (performance)"
+   - Consolidate into single entry
+3. Track all sources: [CodeRabbit], [GitHubAI], [OurAnalysis], [Multiple]
 
-## GAP ANALYSIS
-Explicitly identify gaps between tools:
-- Issues found by our analysis but missed by CodeRabbit/GitHub AI
-- Issues mentioned by other tools but with unclear context (provide clarification)
-- Mismatches in issue counts between tools (investigate discrepancies)
+## SUMMARY REQUIREMENTS
+**MANDATORY**: In your final summary:
+1. List each UNIQUE issue exactly ONCE
+2. Group by category (Security, Error Handling, Performance, Other)
+3. Include detection source for each: "Issue X [CodeRabbit+OurAnalysis]"
+4. Count total UNIQUE issues (not counting duplicates)
+5. Highlight gaps: "Found X issues missed by other tools"
 
-## FORMATTING REQUIREMENTS
-- Use clear headings for each section
-- Provide specific file:line references
-- Include code snippets when relevant
-- Prioritize issues by severity
-- Give actionable remediation steps
-- Always include source attribution
+## OUTPUT FORMAT
+Structure your response as:
 
-If no issues are found in a section, state: "✅ No [category] issues detected"
+### 🔒 Security Issues (X unique issues)
+[List each unique security issue with OWASP category]
+
+### ⚠️ Error Handling Issues (X unique issues)  
+[List each unique error handling issue with error paths]
+
+### 🚀 Performance Issues (X unique issues)
+[List each unique performance issue with metrics]
+
+### 📋 Other Issues (X unique issues)
+[List other issues]
+
+### 📊 Analysis Summary
+- Total unique issues: X
+- By tool: OurAnalysis (X), CodeRabbit overlap (X), GitHub AI overlap (X)
+- Critical gaps: [Issues only we found]
+
+If no issues in a category: "✅ No [category] issues detected"
 """
 
 def save_custom_prompt(prompt_content: str) -> None:
@@ -303,7 +358,7 @@ def save_custom_prompt(prompt_content: str) -> None:
         os.chmod(custom_file, 0o600)
         logger.info(f"Custom prompt saved to {custom_file}")
     except OSError as e:
-        raise ConfigError(f"Failed to save custom prompt: {e}", "Check permissions")
+        raise ConfigError(f"Failed to save custom prompt: {e}", "Check permissions") from e
 
 def list_prompts() -> None:
     """List available prompt templates with descriptions."""
@@ -389,7 +444,7 @@ def edit_prompt_interactive() -> None:
         save_custom_prompt(prompt_content)
         print(f"\n✅ Custom prompt saved! ({len(prompt_content)} characters)")
         print("💡 Use 'custom' as prompt type in your configuration")
-    except Exception as e:
+    except (OSError, ConfigError) as e:
         print(f"❌ Failed to save prompt: {e}")
 
 # Configuration persistence
@@ -465,7 +520,7 @@ def create_config_from_env(repo: str) -> Optional[ReviewConfig]:
         
         return config
         
-    except Exception as e:
+    except (KeyError, ValueError, ConfigError, SecurityError) as e:
         logger.error(f"Failed to create config from environment: {e}")
         return None
 
@@ -484,7 +539,7 @@ def save_config(config: ReviewConfig) -> None:
         logger.info(f"Configuration saved to {config_file}")
         
     except OSError as e:
-        raise ConfigError(f"Failed to save config: {e}", "Check permissions")
+        raise ConfigError(f"Failed to save config: {e}", "Check permissions") from e
 
 # Standardized API client
 class APIClient:
@@ -620,35 +675,55 @@ class APIClient:
             raise ConfigError(f"Unknown AI provider: {self.config.ai_provider}")
     
     def _analyze_with_enhanced_system(self, diff: str, prompt_template: str, coderabbit_comments: List[Dict[str, Any]] = None, github_ai_prompt: str = None) -> List[Dict[str, Any]]:
-        """Enhanced analysis using the new issue analyzer system."""
+        """Enhanced analysis using the new issue analyzer system with deduplication."""
         try:
             analyzer = EnhancedReviewAnalyzer()
             
             # Analyze the diff with enhanced detectors
             analysis_report = analyzer.analyze_diff(diff)
             
-            # Integrate external tool findings
-            if coderabbit_comments:
+            # Integrate external tool findings BEFORE AI analysis
+            if coderabbit_comments or github_ai_prompt:
+                # Convert GitHub AI prompt into issues format if available
                 github_ai_issues = []
                 if github_ai_prompt:
                     # Parse GitHub AI prompt into issues format
                     github_ai_issues = [{'body': github_ai_prompt, 'path': None, 'line': None}]
                 
-                analyzer.integrate_external_issues(coderabbit_comments, github_ai_issues)
+                # Integrate all external issues for deduplication
+                analyzer.integrate_external_issues(coderabbit_comments or [], github_ai_issues)
+                
+                # Regenerate report with all integrated issues
                 analysis_report = analyzer._generate_structured_report()
             
-            # Run AI analysis with enhanced prompt
+            # Run AI analysis with enhanced prompt that includes deduplication context
             ai_comments = []
-            if self.config.ai_provider == 'openai':
-                ai_comments = self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
-            elif self.config.ai_provider == 'anthropic':
-                ai_comments = self._analyze_with_anthropic(diff, prompt_template, coderabbit_comments, github_ai_prompt)
             
-            # Combine enhanced detection with AI analysis
-            return self._merge_analysis_results(analysis_report, ai_comments)
+            # Build context of already-found issues for AI to avoid duplicates
+            existing_issues_context = self._build_existing_issues_context(analysis_report)
+            enhanced_prompt = prompt_template
+            if existing_issues_context:
+                enhanced_prompt = f"{prompt_template}\n\n## Already Detected Issues (DO NOT DUPLICATE):\n{existing_issues_context}"
+            
+            if self.config.ai_provider == 'openai':
+                ai_comments = self._analyze_with_openai(diff, enhanced_prompt, coderabbit_comments, github_ai_prompt)
+            elif self.config.ai_provider == 'anthropic':
+                ai_comments = self._analyze_with_anthropic(diff, enhanced_prompt, coderabbit_comments, github_ai_prompt)
+            
+            # Parse AI comments and add them to the analyzer for final deduplication
+            if ai_comments:
+                # Convert AI comments to Issue format and add to analyzer
+                ai_issues = self._convert_ai_comments_to_issues(ai_comments)
+                analyzer.aggregator.add_issues(ai_issues, f"{self.config.ai_provider}_ai")
+                
+                # Regenerate final report with all deduplicated issues
+                analysis_report = analyzer._generate_structured_report()
+            
+            # Convert the final deduplicated report to comments format
+            return self._convert_report_to_comments(analysis_report)
         
-        except Exception as e:
-            logger.warning(f"Enhanced analysis failed, falling back to standard analysis: {e}")
+        except (ImportError, AttributeError, KeyError, ValueError, TypeError) as e:
+            logger.warning(f"Enhanced analysis failed, falling back to standard analysis: {type(e).__name__}: {e}")
             # Fallback to standard analysis
             if self.config.ai_provider == 'openai':
                 return self._analyze_with_openai(diff, prompt_template, coderabbit_comments, github_ai_prompt)
@@ -657,28 +732,149 @@ class APIClient:
             else:
                 return []
     
-    def _merge_analysis_results(self, enhanced_report: Dict[str, Any], ai_comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge enhanced detection results with AI analysis."""
-        merged_comments = []
+    def _build_existing_issues_context(self, analysis_report: Dict[str, Any]) -> str:
+        """Build a context string of existing issues for the AI to avoid duplicating."""
+        if not analysis_report or analysis_report['summary']['total_issues'] == 0:
+            return ""
         
-        # Add structured report as primary comment
-        if enhanced_report['summary']['total_issues'] > 0:
-            structured_comment = self._format_structured_report(enhanced_report)
-            merged_comments.append({
-                'body': structured_comment,
+        context_lines = []
+        
+        # Add security issues
+        security_section = analysis_report['sections'].get('security', {})
+        if security_section.get('issues'):
+            context_lines.append("Security issues already found:")
+            for issue in security_section['issues']:
+                sources = ', '.join(issue.get('sources', []))
+                context_lines.append(f"- {issue['title']} at {issue['location']} [Found by: {sources}]")
+        
+        # Add error handling issues
+        error_section = analysis_report['sections'].get('error_handling', {})
+        if error_section.get('issues'):
+            context_lines.append("\nError handling issues already found:")
+            for issue in error_section['issues']:
+                sources = ', '.join(issue.get('sources', []))
+                context_lines.append(f"- {issue['title']} at {issue['location']} [Found by: {sources}]")
+        
+        # Add other issues
+        other_section = analysis_report['sections'].get('other', {})
+        if other_section.get('issues'):
+            context_lines.append("\nOther issues already found:")
+            for issue in other_section['issues']:
+                sources = ', '.join(issue.get('sources', []))
+                context_lines.append(f"- {issue['title']} at {issue['location']} [Found by: {sources}]")
+        
+        return '\n'.join(context_lines)
+    
+    def _convert_ai_comments_to_issues(self, ai_comments: List[Dict[str, Any]]) -> List[Issue]:
+        """Convert AI comments to Issue objects for deduplication."""
+        issues = []
+        
+        for comment in ai_comments:
+            body = comment.get('body', '')
+            if not body:
+                continue
+            
+            # Extract location from comment body
+            location_match = re.search(r'(?:in |at |Location: )([^\s:]+\.py)(?::(\d+))?', body)
+            file_path = None
+            line_number = None
+            if location_match:
+                file_path = location_match.group(1)
+                if location_match.group(2):
+                    line_number = int(location_match.group(2))
+            
+            location = IssueLocation(file_path=file_path, line_number=line_number)
+            
+            # Determine category and severity
+            category = IssueCategory.OTHER
+            severity = IssueSeverity.INFO
+            
+            body_lower = body.lower()
+            if any(word in body_lower for word in ['security', 'vulnerability', 'injection', 'xss', 'hardcoded']):
+                category = IssueCategory.SECURITY
+                severity = IssueSeverity.ERROR
+            elif any(word in body_lower for word in ['error', 'exception', 'handling']):
+                category = IssueCategory.ERROR_HANDLING
+                severity = IssueSeverity.WARNING
+            elif any(word in body_lower for word in ['performance', 'slow', 'memory']):
+                category = IssueCategory.PERFORMANCE
+                severity = IssueSeverity.WARNING
+            elif any(word in body_lower for word in ['quality', 'maintainability', 'readability']):
+                category = IssueCategory.CODE_QUALITY
+                severity = IssueSeverity.SUGGESTION
+            
+            # Override severity based on comment metadata
+            comment_severity = comment.get('severity', '').lower()
+            if comment_severity == 'critical':
+                severity = IssueSeverity.CRITICAL
+            elif comment_severity == 'error':
+                severity = IssueSeverity.ERROR
+            elif comment_severity == 'warning':
+                severity = IssueSeverity.WARNING
+            elif comment_severity == 'suggestion':
+                severity = IssueSeverity.SUGGESTION
+            
+            # Extract title (first line or main point)
+            lines = body.split('\n')
+            title = lines[0].strip() if lines else body[:100]
+            
+            # Clean up title
+            title = re.sub(r'^\*\*([^*]+)\*\*', r'\1', title)  # Remove bold
+            title = re.sub(r'^(CRITICAL|ERROR|WARNING):\s*', '', title)  # Remove severity prefix
+            title = re.sub(r'^AI Analysis:\s*', '', title)  # Remove AI prefix
+            
+            issue = Issue(
+                id=Issue.create_id(location, category, title),
+                title=title[:200],  # Limit title length
+                description=body,
+                category=category,
+                severity=severity,
+                location=location,
+                remediation=self._extract_remediation_from_comment(body),
+                sources=[f"{self.config.ai_provider}_ai"],
+                confidence=0.8  # AI suggestions have good but not perfect confidence
+            )
+            
+            issues.append(issue)
+        
+        return issues
+    
+    def _extract_remediation_from_comment(self, body: str) -> str:
+        """Extract remediation advice from AI comment."""
+        # Look for specific remediation patterns
+        patterns = [
+            r'Fix:\s*([^\n]+)',
+            r'Solution:\s*([^\n]+)',
+            r'Remediation:\s*([^\n]+)',
+            r'Recommendation:\s*([^\n]+)',
+            r'Should\s+([^\n]+)',
+            r'Consider\s+([^\n]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        
+        # Default remediation
+        return "Review and address as recommended"
+    
+    def _convert_report_to_comments(self, analysis_report: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Convert the deduplicated analysis report to comment format for posting."""
+        comments = []
+        
+        # Create a single comprehensive comment with all deduplicated issues
+        if analysis_report['summary']['total_issues'] > 0:
+            formatted_report = self._format_structured_report(analysis_report)
+            comments.append({
+                'body': formatted_report,
                 'severity': 'info',
                 'path': None,
-                'line': None
+                'line': None,
+                'sources': list(analysis_report.get('source_attribution', {}).keys())
             })
         
-        # Add AI comments as supplementary analysis
-        for comment in ai_comments:
-            # Avoid duplicate structured reports
-            if 'Enhanced Code Analysis Results' not in comment.get('body', ''):
-                comment['body'] = f"**AI Analysis**: {comment['body']}"
-                merged_comments.append(comment)
-        
-        return merged_comments
+        return comments
     
     def _format_structured_report(self, report: Dict[str, Any]) -> str:
         """Format the structured analysis report for display with OWASP mapping and gap analysis."""
@@ -1188,7 +1384,7 @@ def save_github_workflow(config: ReviewConfig) -> None:
         logger.info(f"GitHub workflow saved to {workflow_file}")
         
     except OSError as e:
-        raise ConfigError(f"Failed to save workflow: {e}", "Check permissions")
+        raise ConfigError(f"Failed to save workflow: {e}", "Check permissions") from e
 
 # CodeRabbit integration
 def create_coderabbit_config(config: ReviewConfig) -> Dict[str, Any]:
@@ -1240,7 +1436,7 @@ def save_coderabbit_config(config: ReviewConfig) -> None:
         logger.info("CodeRabbit configuration saved to .coderabbit.yaml")
         
     except OSError as e:
-        raise ConfigError(f"Failed to save CodeRabbit config: {e}", "Check permissions")
+        raise ConfigError(f"Failed to save CodeRabbit config: {e}", "Check permissions") from e
 
 def setup_github_secrets(config: ReviewConfig) -> None:
     """Configure GitHub repository secrets for automated workflows."""
@@ -1288,8 +1484,8 @@ def setup_github_secrets(config: ReviewConfig) -> None:
                     
             except subprocess.TimeoutExpired:
                 logger.error(f"❌ Timeout setting {secret_name}")
-            except Exception as e:
-                logger.error(f"❌ Error setting {secret_name}: {e}")
+            except (subprocess.SubprocessError, OSError) as e:
+                logger.error(f"❌ Error setting {secret_name}: {type(e).__name__}: {e}")
         
         if success_count == len(secrets_to_set):
             logger.info("🎉 All GitHub secrets configured successfully!")
@@ -1301,7 +1497,7 @@ def setup_github_secrets(config: ReviewConfig) -> None:
     except FileNotFoundError:
         logger.warning("GitHub CLI (gh) not installed - secrets must be set manually")
         print_manual_secret_instructions(config, secrets_to_set)
-    except Exception as e:
+    except (subprocess.SubprocessError, OSError, ValueError) as e:
         logger.error(f"Error setting up GitHub secrets: {e}")
         print_manual_secret_instructions(config, secrets_to_set)
 
@@ -1536,7 +1732,8 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
                 for review in reviews:
                     if "🤖 **AI Code Review Results**" in review.get('body', ''):
                         our_reviews.append(review['body'])
-            except Exception:
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                logger.debug(f"Failed to get our reviews: {e}")
                 pass
 
             # Compile insights
@@ -1650,7 +1847,7 @@ def self_improve_from_own_prs(config: ReviewConfig) -> None:
 
         logger.info("✅ Self-improvement analysis complete!")
 
-    except Exception as e:
+    except (requests.exceptions.RequestException, APIError, ValueError, KeyError) as e:
         logger.error(f"Self-improvement analysis failed: {e}", exc_info=True)
         raise
 
@@ -1697,7 +1894,7 @@ def review_pr(config: ReviewConfig, repo: str, pr_number: str) -> None:
         else:
             logger.info("No additional issues found beyond CodeRabbit analysis - PR looks good!")
 
-    except Exception as e:
+    except (APIError, requests.exceptions.RequestException, ValueError, KeyError) as e:
         logger.error(f"PR review failed: {e}", exc_info=True)
         raise
 
@@ -1755,9 +1952,9 @@ def setup() -> None:
         raise
     except (ConfigError, APIError, SecurityError):
         raise
-    except Exception as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
         logger.error(f"Setup failed: {e}", exc_info=True)
-        raise ConfigError(f"Setup error: {e}", "Check logs for details")
+        raise ConfigError(f"Setup error: {e}", "Check logs for details") from e
 
 def main():
     """Main entry point with complete error handling."""
@@ -1929,6 +2126,7 @@ def main():
         logger.error(str(e))
         sys.exit(1)
     except Exception as e:
+        # This is the top-level catch-all for truly unexpected errors
         logger.error(f"Unexpected error: {e}", exc_info=True)
         sys.exit(1)
 

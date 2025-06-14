@@ -454,8 +454,8 @@ class TestPromptManagement:
         """Test getting the default prompt."""
         default_prompt = get_default_prompt()
         assert len(default_prompt) > 100
-        assert 'SECURITY ISSUES' in default_prompt
-        assert 'ERROR HANDLING ISSUES' in default_prompt
+        assert 'SECURITY VULNERABILITIES' in default_prompt
+        assert 'ERROR HANDLING' in default_prompt
     
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.glob')
@@ -506,7 +506,7 @@ class TestPromptManagement:
         prompt = load_prompt_template('nonexistent')
         # Should return default prompt
         assert len(prompt) > 100
-        assert 'SECURITY ISSUES' in prompt
+        assert 'SECURITY VULNERABILITIES' in prompt
     
     def test_load_prompt_template_custom(self):
         """Test loading custom prompt template."""

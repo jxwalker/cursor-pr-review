@@ -314,17 +314,24 @@ class IssueAggregator:
         self.issues: Dict[str, Issue] = {}
         self.source_stats: Dict[str, int] = {}
         self.duplicates_found: List[Dict[str, str]] = []
+        self.similarity_threshold = 0.7  # Threshold for considering issues as duplicates
     
     def add_issues(self, issues: List[Issue], source: str) -> None:
         """Add issues from a specific source, merging duplicates with enhanced tracking."""
         self.source_stats[source] = len(issues)
         
         for issue in issues:
+            # First try exact ID match
             existing = self.issues.get(issue.id)
+            
+            # If no exact match, look for similar issues
+            if not existing:
+                existing = self._find_similar_issue(issue)
+            
             if existing:
                 # Track duplicate for gap analysis
                 self.duplicates_found.append({
-                    'id': issue.id,
+                    'id': existing.id,
                     'original_source': existing.sources[0] if existing.sources else 'unknown',
                     'duplicate_source': source,
                     'location': str(issue.location)
@@ -337,10 +344,82 @@ class IssueAggregator:
                 # Enhance description with source attribution
                 if source not in existing.description:
                     existing.description += f" (confirmed by {source})"
+                
+                # Merge titles if they're different but similar
+                if issue.title != existing.title and source not in existing.title:
+                    existing.title = f"{existing.title} / {issue.title}"
             else:
                 # New issue - potential gap in other tools
                 issue.add_source(source)
                 self.issues[issue.id] = issue
+    
+    def _find_similar_issue(self, new_issue: Issue) -> Optional[Issue]:
+        """Find an existing issue that's similar to the new one."""
+        for existing_id, existing_issue in self.issues.items():
+            # Check if issues are at the same location and same category
+            if (existing_issue.location.file_path == new_issue.location.file_path and
+                existing_issue.location.line_number == new_issue.location.line_number and
+                existing_issue.category == new_issue.category):
+                return existing_issue
+            
+            # Check for similar issues based on type and location proximity
+            if (existing_issue.location.file_path == new_issue.location.file_path and
+                existing_issue.category == new_issue.category):
+                
+                # Check line proximity (within 2 lines)
+                if (existing_issue.location.line_number and new_issue.location.line_number and
+                    abs(existing_issue.location.line_number - new_issue.location.line_number) <= 2):
+                    
+                    # Check title similarity
+                    if self._are_titles_similar(existing_issue.title, new_issue.title):
+                        return existing_issue
+        
+        return None
+    
+    def _are_titles_similar(self, title1: str, title2: str) -> bool:
+        """Check if two issue titles are similar enough to be considered duplicates."""
+        # Normalize titles
+        t1_lower = title1.lower()
+        t2_lower = title2.lower()
+        
+        # Check for common issue patterns
+        common_patterns = [
+            ('sql injection', 'sql injection'),
+            ('bare except', 'bare except'),
+            ('hardcoded', 'hardcoded'),
+            ('api key', 'api key'),
+            ('exception', 'exception'),
+            ('error handling', 'error handling'),
+            ('security', 'security'),
+            ('vulnerability', 'vulnerability')
+        ]
+        
+        for pattern1, pattern2 in common_patterns:
+            if (pattern1 in t1_lower and pattern2 in t2_lower) or \
+               (pattern2 in t1_lower and pattern1 in t2_lower):
+                return True
+        
+        # Check word overlap
+        words1 = set(t1_lower.split())
+        words2 = set(t2_lower.split())
+        
+        # Remove common words
+        stop_words = {'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were'}
+        words1 = words1 - stop_words
+        words2 = words2 - stop_words
+        
+        if not words1 or not words2:
+            return False
+        
+        # Calculate Jaccard similarity
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        if union == 0:
+            return False
+        
+        similarity = intersection / union
+        return similarity >= self.similarity_threshold
     
     def get_gap_analysis(self) -> Dict[str, Any]:
         """Analyze gaps between different detection tools."""
