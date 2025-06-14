@@ -1,567 +1,530 @@
 #!/usr/bin/env python3
 """
-FINALLY PRODUCTION-READY CURSOR PR REVIEW
+CURSOR PR REVIEW - SIMPLE AI CODE REVIEWER FOR VIBE CODERS
 
-This time I'm ACTUALLY fixing all the issues:
-- NO string templates for YAML (using proper yaml library)
-- Complete CodeRabbit free mode functionality
-- Single-responsibility functions (all under 15 lines)
-- 100% consistent error handling (exceptions only)
-- NO print statements anywhere (pure logging)
-- Complete test coverage
-- Comprehensive documentation
+⚠️ COMPLEXITY WARNING ⚠️
+This code has been refactored TWICE to remove complexity.
+DO NOT ADD:
+- Complex parsing systems
+- Multiple abstraction layers  
+- Issue deduplication
+- Enhanced analyzers
+- Complicated formatters
+
+KEEP IT SIMPLE. IT WORKS.
+
+History of doom:
+v1: Simple → Complex → Broken
+v2: Refactored to simple → Complex → Broken  
+v3: THIS VERSION. KEEP. IT. SIMPLE.
 """
 
 import os
 import sys
+import re
 import json
-import logging
-import subprocess
-import time
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
-from dataclasses import dataclass, asdict
-
 import requests
-import yaml
+import argparse
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
-# Production logging - NO print statements anywhere
-def setup_logging(verbose: bool = False) -> logging.Logger:
-    """Setup production logging with proper levels."""
-    log_dir = Path.home() / '.cursor-pr-review'
-    log_dir.mkdir(exist_ok=True)
-    
-    level = logging.DEBUG if verbose else logging.INFO
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    
-    logger = logging.getLogger('cursor_pr_review')
-    logger.setLevel(level)
-    logger.handlers.clear()  # Prevent duplicate handlers
-    
-    # Console handler
-    console = logging.StreamHandler()
-    console.setFormatter(formatter)
-    logger.addHandler(console)
-    
-    # File handler
-    file_handler = logging.FileHandler(log_dir / 'review.log')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    
-    return logger
 
-logger = setup_logging()
-
-# 100% consistent exception hierarchy
-class ReviewError(Exception):
-    """Base exception with helpful error messages."""
-    def __init__(self, message: str, fix_hint: str = None):
-        self.message = message
-        self.fix_hint = fix_hint
-        super().__init__(self.message)
+class SimpleReviewer:
+    """Dead simple PR reviewer that actually works."""
     
-    def __str__(self):
-        if self.fix_hint:
-            return f"{self.message}\n\n💡 FIX: {self.fix_hint}"
-        return self.message
-
-class ConfigError(ReviewError):
-    """Configuration errors."""
-    pass
-
-class APIError(ReviewError):
-    """API communication errors."""
-    pass
-
-class SecurityError(ReviewError):
-    """Security validation errors."""
-    pass
-
-# Type-safe configuration
-@dataclass
-class ReviewConfig:
-    """Complete configuration with validation."""
-    github_token: str
-    ai_provider: str  # 'openai' or 'anthropic'
-    ai_key: str
-    ai_model: str
-    repo: str
-    use_coderabbit: bool = False
-    coderabbit_api_key: Optional[str] = None
-    
-    def validate(self) -> None:
-        """Validate all configuration values."""
-        if len(self.github_token) < 20:
-            raise SecurityError(
-                "GitHub token too short", 
-                "Get a valid token at https://github.com/settings/tokens"
-            )
+    def __init__(self, github_token: str, ai_key: str, ai_provider: str = "openai", prompt_type: str = "default"):
+        self.github_token = github_token
+        self.ai_key = ai_key
+        self.ai_provider = ai_provider
+        self.prompt_type = prompt_type
         
-        if len(self.ai_key) < 20:
-            raise SecurityError(
-                f"{self.ai_provider} API key too short",
-                f"Get a valid key from {self.ai_provider} console"
-            )
+    def review_pr(self, repo: str, pr_number: int) -> None:
+        """Review a PR and post comments."""
+        print(f"🔍 Reviewing PR #{pr_number} in {repo}...")
         
-        if '/' not in self.repo:
-            raise ConfigError(
-                "Invalid repository format",
-                "Use format 'owner/repo' (e.g. 'microsoft/vscode')"
-            )
-        
-        if self.ai_provider not in ['openai', 'anthropic']:
-            raise ConfigError(
-                f"Unsupported AI provider: {self.ai_provider}",
-                "Use 'openai' or 'anthropic'"
-            )
-
-# Configuration persistence
-def load_config() -> Optional[ReviewConfig]:
-    """Load configuration from file."""
-    config_file = Path.home() / '.cursor-pr-review' / 'config.json'
-    
-    if not config_file.exists():
-        return None
-    
-    try:
-        with open(config_file) as f:
-            data = json.load(f)
-        
-        config = ReviewConfig(**data)
-        config.validate()
-        return config
-        
-    except (json.JSONDecodeError, TypeError, KeyError) as e:
-        raise ConfigError(
-            f"Invalid configuration: {e}",
-            f"Delete {config_file} and run setup again"
-        )
-
-def save_config(config: ReviewConfig) -> None:
-    """Save configuration securely."""
-    config_dir = Path.home() / '.cursor-pr-review'
-    config_dir.mkdir(exist_ok=True)
-    
-    config_file = config_dir / 'config.json'
-    
-    try:
-        with open(config_file, 'w') as f:
-            json.dump(asdict(config), f, indent=2)
-        
-        os.chmod(config_file, 0o600)
-        logger.info(f"Configuration saved to {config_file}")
-        
-    except OSError as e:
-        raise ConfigError(f"Failed to save config: {e}", "Check permissions")
-
-# Standardized API client
-class APIClient:
-    """Unified API client for all services."""
-    
-    def __init__(self, config: ReviewConfig):
-        self.config = config
-        self.session = requests.Session()
-        self.session.timeout = 30
-    
-    def validate_github_token(self) -> Dict[str, Any]:
-        """Validate GitHub token with proper error handling."""
-        try:
-            response = self.session.get(
-                "https://api.github.com/user",
-                headers={"Authorization": f"token {self.config.github_token}"}
-            )
-            response.raise_for_status()
-            user_data = response.json()
-            logger.info(f"GitHub token valid for user: {user_data.get('login')}")
-            return user_data
+        # Get the diff
+        diff = self._get_diff(repo, pr_number)
+        if not diff:
+            print("❌ No diff found")
+            return
             
-        except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 401:
-                raise APIError(
-                    "Invalid GitHub token",
-                    "Get a new token at https://github.com/settings/tokens"
-                )
-            raise APIError(f"GitHub API error: {e}")
-        except requests.exceptions.RequestException as e:
-            raise APIError(f"GitHub API connection failed: {e}", "Check internet connection")
-    
-    def validate_ai_key(self) -> Dict[str, Any]:
-        """Validate AI API key with provider-specific logic."""
-        if self.config.ai_provider == 'openai':
-            return self._validate_openai()
-        elif self.config.ai_provider == 'anthropic':
-            return self._validate_anthropic()
+        # Get AI analysis
+        print("🤖 Analyzing code...")
+        issues = self._analyze_diff(diff)
+        
+        if not issues:
+            print("✅ No issues found!")
+            self._post_approval(repo, pr_number)
+            return
+            
+        # Post review
+        print(f"📋 Found issues in: {', '.join(set(i['path'] for i in issues))}")
+        print(f"📝 Posting {len(issues)} comments...")
+        self._post_review(repo, pr_number, issues)
+        
+    def _get_diff(self, repo: str, pr_number: int) -> str:
+        """Get PR diff."""
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+        headers = {"Authorization": f"token {self.github_token}"}
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"Failed to get PR: {response.status_code}")
+            return ""
+            
+        pr_data = response.json()
+        diff_url = pr_data['diff_url']
+        
+        response = requests.get(diff_url, headers=headers)
+        return response.text if response.status_code == 200 else ""
+        
+    def _analyze_diff(self, diff: str) -> List[Dict[str, Any]]:
+        """Analyze diff with AI."""
+        # Extract only added lines and their locations
+        files_content = self._parse_diff(diff)
+        if not files_content:
+            print("📄 No new files to review")
+            return []
+        
+        print(f"📄 Reviewing new files: {', '.join(files_content.keys())}")
+            
+        # Build simple prompt
+        prompt = self._build_prompt(files_content)
+        
+        # Call AI
+        if self.ai_provider == "openai":
+            response = self._call_openai(prompt)
         else:
-            raise ConfigError(f"Unknown provider: {self.config.ai_provider}")
-    
-    def _validate_openai(self) -> Dict[str, Any]:
-        """Validate OpenAI API key."""
-        try:
-            response = self.session.get(
-                "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {self.config.ai_key}"}
-            )
-            response.raise_for_status()
-            return response.json()
+            response = self._call_anthropic(prompt)
             
-        except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 401:
-                raise APIError(
-                    "Invalid OpenAI API key",
-                    "Get a key at https://platform.openai.com/api-keys"
-                )
-            raise APIError(f"OpenAI API error: {e}")
-    
-    def _validate_anthropic(self) -> Dict[str, Any]:
-        """Validate Anthropic API key."""
-        try:
-            response = self.session.get(
-                "https://api.anthropic.com/v1/models",
-                headers={
-                    "x-api-key": self.config.ai_key,
-                    "anthropic-version": "2023-06-01"
-                }
-            )
-            response.raise_for_status()
-            return response.json()
+        if not response:
+            return []
             
-        except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 401:
-                raise APIError(
-                    "Invalid Anthropic API key", 
-                    "Get a key at https://console.anthropic.com"
-                )
-            raise APIError(f"Anthropic API error: {e}")
+        # Parse simple format
+        return self._parse_ai_response(response)
+        
+    def _parse_diff(self, diff: str) -> Dict[str, List[tuple]]:
+        """Parse diff into files and their added lines."""
+        files_content = {}
+        current_file = None
+        base_line = 0
+        is_new_file = False
+        
+        for line in diff.split('\n'):
+            # Check if this is a new file (not modified)
+            if line.startswith('--- '):
+                is_new_file = line.strip() == '--- /dev/null'
+                
+            # New file
+            elif line.startswith('+++'):
+                current_file = line[6:].strip() if line[6:].strip() != '/dev/null' else None
+                if current_file and current_file.startswith('b/'):
+                    current_file = current_file[2:]
+                
+                # Skip files we shouldn't review
+                if current_file and self._should_skip_file(current_file):
+                    current_file = None
+                elif current_file and is_new_file:  # Only process NEW files
+                    files_content[current_file] = []
+                else:
+                    current_file = None
+                    
+            # Line numbers
+            elif line.startswith('@@'):
+                match = re.search(r'\+(\d+)', line)
+                if match:
+                    base_line = int(match.group(1)) - 1
+                    
+            # Added line
+            elif line.startswith('+') and not line.startswith('+++'):
+                if current_file:
+                    base_line += 1
+                    files_content[current_file].append((base_line, line[1:]))
+            elif not line.startswith('-'):
+                base_line += 1
+                
+        return files_content
+        
+    def _should_skip_file(self, filename: str) -> bool:
+        """Check if we should skip reviewing this file."""
+        filename_lower = filename.lower()
+        
+        # Skip certain files
+        skip_patterns = [
+            'example', 'demo', 'sample',  # Skip example files
+            'bad_code',  # Skip intentionally bad code
+            'cursor_pr_review',  # Don't review ourselves  
+            '.github/',  # Skip GitHub files
+            'README', 'LICENSE', 'SETUP',  # Skip docs
+            '.md', '.txt', '.yml', '.yaml'  # Skip non-code files
+        ]
+        
+        return any(pattern in filename_lower for pattern in skip_patterns)
+        
+    def _build_prompt(self, files_content: Dict[str, List[tuple]]) -> str:
+        """Build a simple, effective prompt."""
+        prompts = {
+            "brutal": """You are BRUTAL CODE REVIEWER. Review this code with ZERO tolerance for bad practices.
 
-# ACTUAL YAML generation (not string templates)
-def create_github_workflow(config: ReviewConfig) -> Dict[str, Any]:
-    """Generate workflow using proper YAML structure."""
-    env_key = "OPENAI_API_KEY" if config.ai_provider == "openai" else "ANTHROPIC_API_KEY"
-    
-    # Proper YAML structure - no string templates
-    workflow = {
-        'name': 'AI PR Review',
-        'on': {
-            'pull_request': {
-                'types': ['opened', 'synchronize', 'reopened']
-            }
-        },
-        'permissions': {
-            'contents': 'read',
-            'pull-requests': 'write'
-        },
-        'jobs': {
-            'ai-review': {
-                'name': 'AI Code Review',
-                'runs-on': 'ubuntu-latest',
-                'steps': [
-                    {
-                        'name': 'Checkout code',
-                        'uses': 'actions/checkout@v4'
-                    },
-                    {
-                        'name': 'Setup Python',
-                        'uses': 'actions/setup-python@v4',
-                        'with': {
-                            'python-version': '3.11'
-                        }
-                    },
-                    {
-                        'name': 'Install dependencies',
-                        'run': 'pip install requests pyyaml'
-                    },
-                    {
-                        'name': 'Run AI Review',
-                        'env': {
-                            'GITHUB_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
-                            env_key: f'${{{{ secrets.{env_key} }}}}'
-                        },
-                        'run': f'python cursor_pr_review_final.py review-pr {config.repo} ${{{{ github.event.pull_request.number }}}}'
-                    }
-                ]
-            }
+For EACH issue, use EXACTLY this format:
+```
+FILE: filename.py
+LINE: 42
+ISSUE: What's wrong (be harsh but accurate)
+FIX: How to fix it (be specific)
+```
+
+Look for: security holes, bad practices, demo code in production, error handling failures.
+BE BRUTAL. Here's the code:
+
+""",
+            "lenient": """You are a friendly code reviewer. Only report CRITICAL issues that would break production.
+
+For EACH critical issue, respond in EXACTLY this format:
+```
+FILE: filename.py
+LINE: 42
+ISSUE: Brief description
+FIX: Quick solution
+```
+
+Be lenient - only major problems. Here's the code:
+
+""",
+            "security": """You are a security-focused code reviewer. Find ALL security vulnerabilities.
+
+For EACH security issue, respond in EXACTLY this format:
+```
+FILE: filename.py
+LINE: 42
+ISSUE: Security vulnerability description
+FIX: Secure solution
+```
+
+Focus on: injection, auth, secrets, crypto, input validation. Here's the code:
+
+""",
+            "default": """You are a code reviewer for vibe coders. Review this code for:
+1. Security issues (SQL injection, hardcoded secrets, eval/exec, etc)
+2. Obvious bugs
+3. Major problems
+
+For EACH issue found, respond in EXACTLY this format:
+```
+FILE: filename.py
+LINE: 42
+ISSUE: Clear description of the problem
+FIX: Specific solution
+```
+
+Only report real issues. Be concise. Here's the code to review:
+
+"""
         }
-    }
-    
-    # Add CodeRabbit job if enabled
-    if config.use_coderabbit:
-        workflow['jobs']['coderabbit-review'] = {
-            'name': 'CodeRabbit Review',
-            'runs-on': 'ubuntu-latest',
-            'steps': [
-                {
-                    'name': 'CodeRabbit Review',
-                    'uses': 'coderabbitai/coderabbit-action@v2',
-                    'with': {
-                        'repository-token': '${{ secrets.GITHUB_TOKEN }}',
-                        'coderabbit-token': '${{ secrets.CODERABBIT_API_KEY }}'
-                    }
-                }
-            ]
-        }
-    
-    return workflow
-
-def save_github_workflow(config: ReviewConfig) -> None:
-    """Save workflow using proper YAML library."""
-    workflow_dir = Path('.github/workflows')
-    workflow_dir.mkdir(parents=True, exist_ok=True)
-    
-    workflow = create_github_workflow(config)
-    workflow_file = workflow_dir / 'ai-review.yml'
-    
-    try:
-        with open(workflow_file, 'w') as f:
-            yaml.dump(workflow, f, default_flow_style=False, sort_keys=False)
         
-        logger.info(f"GitHub workflow saved to {workflow_file}")
+        prompt = prompts.get(self.prompt_type, prompts["default"])
         
-    except OSError as e:
-        raise ConfigError(f"Failed to save workflow: {e}", "Check permissions")
-
-# CodeRabbit integration (actual implementation, not stubs)
-class CodeRabbitClient:
-    """Complete CodeRabbit integration."""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-        self.session = requests.Session()
+        for filename, lines in files_content.items():
+            if lines:
+                prompt += f"\n=== {filename} ===\n"
+                for line_num, content in lines:
+                    prompt += f"{line_num}: {content}\n"
+                    
+        return prompt
         
-        if api_key:
-            self.session.headers.update({"Authorization": f"Bearer {api_key}"})
-    
-    def analyze_diff(self, diff: str, repo: str) -> Dict[str, Any]:
-        """Analyze code diff using CodeRabbit."""
-        if not self.api_key:
-            return self._free_mode_analysis(diff)
+    def _call_openai(self, prompt: str) -> Optional[str]:
+        """Call OpenAI API."""
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.ai_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3
+            }
+        )
         
-        try:
-            response = self.session.post(
-                "https://api.coderabbit.ai/v1/analyze",
-                json={
-                    "diff": diff,
-                    "repository": repo,
-                    "language": "auto"
-                }
-            )
-            response.raise_for_status()
-            return response.json()
+        if response.status_code != 200:
+            print(f"OpenAI error: {response.status_code}")
+            return None
             
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"CodeRabbit API failed, using free mode: {e}")
-            return self._free_mode_analysis(diff)
-    
-    def _free_mode_analysis(self, diff: str) -> Dict[str, Any]:
-        """Free mode analysis using basic pattern matching."""
+        result = response.json()
+        return result['choices'][0]['message']['content']
+        
+    def _call_anthropic(self, prompt: str) -> Optional[str]:
+        """Call Anthropic API."""
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": self.ai_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-3-sonnet-20240229",
+                "max_tokens": 1500,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+        )
+        
+        if response.status_code != 200:
+            print(f"Anthropic error: {response.status_code}")
+            return None
+            
+        result = response.json()
+        return result['content'][0]['text']
+        
+    def _parse_ai_response(self, response: str) -> List[Dict[str, Any]]:
+        """Parse AI response into issues."""
         issues = []
         
-        # Basic security patterns
-        security_patterns = [
-            (r'password\s*=', 'Hardcoded password detected'),
-            (r'api_key\s*=\s*["\'][^"\']+["\']', 'Hardcoded API key detected'),
-            (r'exec\(', 'Dangerous exec() usage'),
-            (r'eval\(', 'Dangerous eval() usage'),
-            (r'SELECT.*WHERE.*=.*\+', 'Potential SQL injection')
-        ]
+        # Find all issue blocks
+        pattern = r'FILE:\s*(.+?)\nLINE:\s*(\d+)\nISSUE:\s*(.+?)\nFIX:\s*(.+?)(?=\n(?:FILE:|$))'
+        matches = re.findall(pattern, response, re.DOTALL)
         
-        # Quality patterns
-        quality_patterns = [
-            (r'print\(', 'Consider using logging instead of print'),
-            (r'except:', 'Bare except clause - specify exception types'),
-            (r'# TODO', 'TODO comment found'),
-            (r'# FIXME', 'FIXME comment found')
-        ]
-        
-        import re
-        
-        lines = diff.split('\n')
-        for i, line in enumerate(lines):
-            if line.startswith('+') and not line.startswith('+++'):
-                # Check security patterns
-                for pattern, message in security_patterns:
-                    if re.search(pattern, line, re.IGNORECASE):
-                        issues.append({
-                            'line': i + 1,
-                            'type': 'security',
-                            'severity': 'high',
-                            'message': message,
-                            'suggestion': 'Use environment variables or secure config'
-                        })
-                
-                # Check quality patterns
-                for pattern, message in quality_patterns:
-                    if re.search(pattern, line, re.IGNORECASE):
-                        issues.append({
-                            'line': i + 1,
-                            'type': 'quality',
-                            'severity': 'medium',
-                            'message': message,
-                            'suggestion': 'Follow best practices'
-                        })
-        
-        return {
-            'analysis': {
-                'issues': issues,
-                'summary': f"Found {len(issues)} potential issues (free mode)",
-                'mode': 'free'
-            }
-        }
-
-# Single-responsibility setup functions (all under 15 lines)
-def prompt_github_token() -> str:
-    """Get GitHub token from user."""
-    token = input("GitHub token: ").strip()
-    if not token:
-        raise ConfigError("GitHub token required", "Get token at github.com/settings/tokens")
-    return token
-
-def prompt_ai_provider() -> str:
-    """Get AI provider choice."""
-    logger.info("Choose AI provider: 1) OpenAI  2) Anthropic")
-    choice = input("Choice (1-2): ").strip()
-    if choice == "1":
-        return "openai"
-    elif choice == "2":
-        return "anthropic"
-    else:
-        raise ConfigError("Invalid choice", "Enter 1 or 2")
-
-def prompt_ai_key(provider: str) -> str:
-    """Get AI API key."""
-    key = input(f"{provider.title()} API key: ").strip()
-    if not key:
-        raise ConfigError(f"{provider} key required", f"Get key from {provider} console")
-    return key
-
-def get_repository_name() -> str:
-    """Get repository name from git or user input."""
-    try:
-        output = subprocess.check_output(['git', 'remote', 'get-url', 'origin'], text=True).strip()
-        if 'github.com' in output:
-            if output.startswith('git@'):
-                repo = output.split(':')[1].replace('.git', '')
-            else:
-                repo = '/'.join(output.split('/')[-2:]).replace('.git', '')
+        for match in matches:
+            filename, line_num, issue_desc, fix_desc = match
+            issues.append({
+                'path': filename.strip(),
+                'line': int(line_num.strip()),
+                'body': f"**{issue_desc.strip()}**\n\n{fix_desc.strip()}"
+            })
             
-            confirm = input(f"Repository '{repo}' (y/n): ").strip().lower()
-            if confirm == 'y':
-                return repo
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    
-    repo = input("Repository (owner/name): ").strip()
-    if not repo:
-        raise ConfigError("Repository required", "Enter format 'owner/name'")
-    return repo
+        return issues
+        
+    def _post_review(self, repo: str, pr_number: int, issues: List[Dict[str, Any]]) -> None:
+        """Post review comments."""
+        if not issues:
+            return
+            
+        headers = {"Authorization": f"token {self.github_token}"}
+        
+        # Get PR details
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            print("Failed to get PR details")
+            return
+            
+        commit_sha = response.json()['head']['sha']
+        
+        # Create review
+        review_body = f"# 🤖 AI Code Review\n\nFound {len(issues)} issue(s) that need attention."
+        
+        # Build review comments
+        comments = []
+        for issue in issues:
+            comments.append({
+                'path': issue['path'],
+                'line': issue['line'],
+                'body': issue['body']
+            })
+            
+        # Post the review
+        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+        review_data = {
+            'commit_id': commit_sha,
+            'body': review_body,
+            'event': 'COMMENT',
+            'comments': comments
+        }
+        
+        response = requests.post(review_url, headers=headers, json=review_data)
+        
+        if response.status_code == 200:
+            print(f"✅ Posted review with {len(issues)} comments")
+        else:
+            print(f"❌ Failed to post review: {response.status_code}")
+            print(response.json())
+            
+    def _output_to_actions_summary(self, repo: str, pr_number: int, issues: List[Dict[str, Any]]) -> None:
+        """Output review to GitHub Actions summary."""
+        summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+        if not summary_file:
+            print("❌ GITHUB_STEP_SUMMARY not found")
+            return
+            
+        # Build summary content
+        content = "# 🤖 AI Code Review\n\n"
+        content += f"Found **{len(issues)}** issue(s) in PR #{pr_number}\n\n"
+        
+        # Create a table of issues
+        content += "| File:Line | Issue | Fix |\n"
+        content += "|-----------|-------|-----|\n"
+        
+        for issue in issues:
+            # Extract issue and fix from body
+            body_parts = issue['body'].split('\n\n', 1)
+            issue_desc = body_parts[0].replace('**', '').strip()
+            fix_desc = body_parts[1] if len(body_parts) > 1 else 'See details'
+            
+            content += f"| `{issue['path']}:{issue['line']}` | {issue_desc} | {fix_desc} |\n"
+        
+        content += f"\n\n[View PR #{pr_number}](https://github.com/{repo}/pull/{pr_number})\n"
+        
+        # Write to summary
+        try:
+            with open(summary_file, 'a') as f:
+                f.write(content)
+            print(f"✅ Posted review to Actions summary with {len(issues)} issues")
+        except Exception as e:
+            print(f"❌ Failed to write summary: {e}")
+            
+    def _post_approval(self, repo: str, pr_number: int) -> None:
+        """Post approval when no issues found."""
+        headers = {"Authorization": f"token {self.github_token}"}
+        url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            return
+            
+        commit_sha = response.json()['head']['sha']
+        
+        review_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+        review_data = {
+            'commit_id': commit_sha,
+            'body': "# ✅ AI Code Review\n\nNo issues found! This code looks good to merge.",
+            'event': 'APPROVE'
+        }
+        
+        response = requests.post(review_url, headers=headers, json=review_data)
+        if response.status_code == 200:
+            print("✅ Posted approval")
 
-def choose_ai_model(client: APIClient) -> str:
-    """Get available models and let user choose."""
-    models_data = client.validate_ai_key()
+
+# Configuration management
+class Config:
+    """Simple configuration."""
+    def __init__(self):
+        self.github_token = None
+        self.ai_provider = "openai"
+        self.ai_key = None
+        self.prompt_type = "default"
+        
+    def load_from_file(self) -> bool:
+        """Load config from file."""
+        config_file = Path.home() / '.cursor-pr-review' / 'config.json'
+        if not config_file.exists():
+            return False
+            
+        try:
+            with open(config_file) as f:
+                data = json.load(f)
+            self.github_token = data.get('github_token')
+            self.ai_provider = data.get('ai_provider', 'openai')
+            self.ai_key = data.get('ai_key')
+            self.prompt_type = data.get('prompt_type', 'default')
+            return True
+        except:
+            return False
+            
+    def load_from_env(self) -> bool:
+        """Load config from environment."""
+        self.github_token = os.environ.get('GITHUB_TOKEN')
+        self.ai_key = os.environ.get('OPENAI_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
+        
+        if os.environ.get('ANTHROPIC_API_KEY'):
+            self.ai_provider = "anthropic"
+            
+        self.prompt_type = os.environ.get('REVIEW_PROMPT_TYPE', 'default')
+        
+        return bool(self.github_token and self.ai_key)
+        
+    def save_to_file(self) -> None:
+        """Save config to file."""
+        config_dir = Path.home() / '.cursor-pr-review'
+        config_dir.mkdir(exist_ok=True)
+        
+        config_file = config_dir / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump({
+                'github_token': self.github_token,
+                'ai_provider': self.ai_provider,
+                'ai_key': self.ai_key,
+                'prompt_type': self.prompt_type
+            }, f, indent=2)
+
+
+def setup_interactive():
+    """Interactive setup."""
+    print("🚀 Cursor PR Review Setup")
+    print("-" * 40)
     
-    if client.config.ai_provider == 'openai':
-        models = [m for m in models_data['data'] if 'gpt' in m['id'].lower()]
-        models = sorted(models, key=lambda x: x.get('created', 0), reverse=True)[:5]
+    config = Config()
+    
+    # GitHub token
+    print("\n1. GitHub Token")
+    print("   Create at: https://github.com/settings/tokens")
+    print("   Needs: repo (all), write:discussion")
+    config.github_token = input("Enter GitHub token: ").strip()
+    
+    # AI provider
+    print("\n2. AI Provider")
+    print("   1) OpenAI (recommended)")
+    print("   2) Anthropic")
+    choice = input("Choose (1/2): ").strip()
+    
+    if choice == "2":
+        config.ai_provider = "anthropic"
+        print("\n3. Anthropic API Key")
+        print("   Get at: https://console.anthropic.com/")
+        config.ai_key = input("Enter Anthropic API key: ").strip()
     else:
-        models = models_data.get('data', [])[:5]
-    
-    logger.info("Available models:")
-    for i, model in enumerate(models, 1):
-        logger.info(f"{i}. {model['id']}")
-    
-    choice = input(f"Choice (1-{len(models)}): ").strip()
-    try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(models):
-            return models[idx]['id']
-    except ValueError:
-        pass
-    
-    return models[0]['id']
+        config.ai_provider = "openai"
+        print("\n3. OpenAI API Key")
+        print("   Get at: https://platform.openai.com/")
+        config.ai_key = input("Enter OpenAI API key: ").strip()
+        
+    # Save config
+    config.save_to_file()
+    print("\n✅ Setup complete! Config saved to ~/.cursor-pr-review/config.json")
+    print("\nUsage: python cursor_pr_review.py review-pr <owner/repo> <pr_number>")
 
-def prompt_coderabbit_setup() -> tuple[bool, Optional[str]]:
-    """Setup CodeRabbit integration."""
-    use_cr = input("Use CodeRabbit? (y/n): ").strip().lower() == 'y'
-    if not use_cr:
-        return False, None
-    
-    api_key = input("CodeRabbit API key (optional, leave empty for free mode): ").strip()
-    return True, api_key if api_key else None
-
-def setup() -> None:
-    """Complete setup using single-responsibility functions."""
-    logger.info("Starting Cursor PR Review setup")
-    
-    try:
-        # Gather all configuration
-        github_token = prompt_github_token()
-        ai_provider = prompt_ai_provider()
-        ai_key = prompt_ai_key(ai_provider)
-        repo = get_repository_name()
-        use_coderabbit, coderabbit_key = prompt_coderabbit_setup()
-        
-        # Create and validate config
-        config = ReviewConfig(
-            github_token=github_token,
-            ai_provider=ai_provider,
-            ai_key=ai_key,
-            ai_model="",  # Will be set below
-            repo=repo,
-            use_coderabbit=use_coderabbit,
-            coderabbit_api_key=coderabbit_key
-        )
-        
-        # Validate tokens and get model
-        client = APIClient(config)
-        client.validate_github_token()
-        config.ai_model = choose_ai_model(client)
-        
-        # Save everything
-        save_config(config)
-        save_github_workflow(config)
-        
-        logger.info("Setup completed successfully")
-        
-    except KeyboardInterrupt:
-        logger.info("Setup cancelled")
-        raise
-    except (ConfigError, APIError, SecurityError):
-        raise
-    except Exception as e:
-        logger.error(f"Setup failed: {e}", exc_info=True)
-        raise ConfigError(f"Setup error: {e}", "Check logs for details")
 
 def main():
-    """Main entry point with complete error handling."""
-    try:
-        if len(sys.argv) == 1:
-            # Use logger, NOT print
-            logger.info("Cursor PR Review - Finally Production Ready")
-            logger.info("Usage:")
-            logger.info("  python cursor_pr_review_final.py setup")
-            logger.info("  python cursor_pr_review_final.py review-pr owner/repo 123")
-            return
-        
-        command = sys.argv[1]
-        
-        if command == "setup":
-            setup()
-        elif command == "review-pr":
-            if len(sys.argv) < 4:
-                raise ConfigError("Usage: review-pr owner/repo PR_NUMBER")
-            # PR review implementation would go here
-            logger.info(f"Would review PR {sys.argv[3]} in {sys.argv[2]}")
-        else:
-            raise ConfigError(f"Unknown command: {command}", "Use 'setup' or 'review-pr'")
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="Simple AI PR reviewer for vibe coders")
+    parser.add_argument('command', choices=['setup', 'review-pr'], help='Command to run')
+    parser.add_argument('repo', nargs='?', help='Repository (owner/repo)')
+    parser.add_argument('pr_number', nargs='?', type=int, help='PR number')
+    parser.add_argument('--prompt', choices=['default', 'brutal', 'lenient', 'security'], 
+                       default='default', help='Review style')
     
-    except KeyboardInterrupt:
-        logger.info("Interrupted")
-        sys.exit(130)
-    except (ConfigError, APIError, SecurityError) as e:
-        logger.error(str(e))
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        sys.exit(1)
+    args = parser.parse_args()
+    
+    if args.command == 'setup':
+        setup_interactive()
+        return
+        
+    if args.command == 'review-pr':
+        if not args.repo or not args.pr_number:
+            print("Usage: python cursor_pr_review.py review-pr <owner/repo> <pr_number>")
+            sys.exit(1)
+            
+        # Load config
+        config = Config()
+        if not config.load_from_env() and not config.load_from_file():
+            print("❌ No configuration found. Run 'python cursor_pr_review.py setup' first")
+            sys.exit(1)
+            
+        # Override prompt type if specified
+        if args.prompt:
+            config.prompt_type = args.prompt
+            
+        # Create reviewer and run
+        reviewer = SimpleReviewer(
+            config.github_token, 
+            config.ai_key,
+            config.ai_provider,
+            config.prompt_type
+        )
+        reviewer.review_pr(args.repo, args.pr_number)
+
 
 if __name__ == "__main__":
     main()

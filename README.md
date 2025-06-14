@@ -1,29 +1,39 @@
 # Cursor PR Review
 
-**Automated, AI-powered Pull Request Feedback for Modern Vibe Coders**
+**Simple AI Code Reviewer for Vibe Coders**
 
 ---
 
 ## 🚀 Overview
 
-**Cursor PR Review** is a production-ready tool that automates code review feedback on GitHub pull requests using state-of-the-art AI models. Designed for developers who value speed, quality, and modern workflows, it integrates seamlessly with your repo to catch issues, suggest improvements, and keep your codebase clean—without the hassle.
+**Cursor PR Review** is a dead simple AI code reviewer that actually works. After being refactored twice to remove complexity, this tool now does one thing well: review your PRs and post clear, actionable feedback.
 
-- **No more manual reviews:** Get instant, actionable feedback on every PR.
-- **AI-powered analysis:** Uses OpenAI, Anthropic, and CodeRabbit (free/paid) for deep code insights.
-- **Production-grade:** Robust error handling, full test coverage, and clean, maintainable code.
-- **Easy setup:** One command to get started, with secure config and GitHub Actions integration.
+- **Simple:** ~400 lines of code that just works
+- **Clear output:** No garbage, no "Unknown location", no empty fixes
+- **Multiple review styles:** Default, brutal, lenient, or security-focused
+- **Works with:** OpenAI GPT-4 or Anthropic Claude
+
+---
+
+## ⚠️ SIMPLICITY WARNING
+
+This code has been refactored TWICE to remove complexity. Please DO NOT add:
+- Complex parsing systems
+- Multiple abstraction layers  
+- Issue deduplication
+- Enhanced analyzers
+- Complicated formatters
+
+Keep it simple. It works.
 
 ---
 
 ## ✨ Features
 
-- **Automated PR Review:** Triggers on every pull request, analyzing diffs for security, quality, and style issues.
-- **AI Model Flexibility:** Supports OpenAI, Anthropic, and CodeRabbit (free or paid).
-- **Secure & Configurable:** No hardcoded secrets; all credentials are securely managed.
-- **Modern YAML Workflows:** Uses the official `yaml` library for robust GitHub Actions generation.
-- **Comprehensive Logging:** No print statements—just clean, structured logs.
-- **Full Test Suite:** 52+ tests ensure reliability and maintainability.
-- **Beginner-Friendly:** Clear prompts, helpful errors, and detailed documentation.
+- **Automated PR Review:** Get AI feedback on every PR
+- **Clear feedback:** Specific file, line number, issue, and fix
+- **Multiple prompts:** Choose your review style
+- **No complexity:** Just works
 
 ---
 
@@ -32,21 +42,42 @@
 ### 1. Install Requirements
 
 ```bash
-pip install -r requirements.txt
+pip install requests
 ```
 
-### 2. Setup the Tool
+That's it. No complex dependencies.
+
+### 2. Setup
 
 ```bash
-python cursor_pr_review_final.py setup
+python cursor_pr_review.py setup
 ```
 
-- Prompts for your GitHub token and AI provider.
-- Validates credentials and fetches available models.
-- Optionally enables CodeRabbit integration.
-- Generates a secure config and GitHub Actions workflow.
+Enter your:
+- GitHub token (from https://github.com/settings/tokens)
+- OpenAI or Anthropic API key
 
-### 3. Enable Automated PR Reviews
+### 3. Review a PR
+
+```bash
+# Default review
+python cursor_pr_review.py review-pr owner/repo 123
+
+# Brutal review
+python cursor_pr_review.py review-pr owner/repo 123 --prompt brutal
+
+# Lenient review  
+python cursor_pr_review.py review-pr owner/repo 123 --prompt lenient
+
+# Security-focused
+python cursor_pr_review.py review-pr owner/repo 123 --prompt security
+```
+
+### 4. Set Up Automated Reviews (Optional)
+
+See [SETUP_AUTOMATED_REVIEWS.md](SETUP_AUTOMATED_REVIEWS.md) for GitHub Actions setup.
+
+**Important**: You need a Personal Access Token (PAT) for automated reviews to work.
 
 Push the generated workflow file to your repo. Every new PR will now be automatically reviewed!
 
