@@ -3,6 +3,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   ai-review:
     runs-on: ubuntu-latest
@@ -20,7 +24,7 @@ jobs:
         
       - name: Run AI Review
         env:
-          GITHUB_TOKEN: ${{ secrets.PR_REVIEW_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           REVIEW_PROMPT_TYPE: default
         run: |
