@@ -58,6 +58,7 @@ class SimpleReviewer:
             return
             
         # Post review
+        print(f"📋 Found issues in: {', '.join(set(i['path'] for i in issues))}")
         print(f"📝 Posting {len(issues)} comments...")
         self._post_review(repo, pr_number, issues)
         
@@ -82,7 +83,10 @@ class SimpleReviewer:
         # Extract only added lines and their locations
         files_content = self._parse_diff(diff)
         if not files_content:
+            print("📄 No new files to review")
             return []
+        
+        print(f"📄 Reviewing new files: {', '.join(files_content.keys())}")
             
         # Build simple prompt
         prompt = self._build_prompt(files_content)
@@ -104,15 +108,26 @@ class SimpleReviewer:
         files_content = {}
         current_file = None
         base_line = 0
+        is_new_file = False
         
         for line in diff.split('\n'):
+            # Check if this is a new file (not modified)
+            if line.startswith('--- '):
+                is_new_file = line.strip() == '--- /dev/null'
+                
             # New file
-            if line.startswith('+++'):
+            elif line.startswith('+++'):
                 current_file = line[6:].strip() if line[6:].strip() != '/dev/null' else None
                 if current_file and current_file.startswith('b/'):
                     current_file = current_file[2:]
-                if current_file:
+                
+                # Skip files we shouldn't review
+                if current_file and self._should_skip_file(current_file):
+                    current_file = None
+                elif current_file and is_new_file:  # Only process NEW files
                     files_content[current_file] = []
+                else:
+                    current_file = None
                     
             # Line numbers
             elif line.startswith('@@'):
@@ -129,6 +144,22 @@ class SimpleReviewer:
                 base_line += 1
                 
         return files_content
+        
+    def _should_skip_file(self, filename: str) -> bool:
+        """Check if we should skip reviewing this file."""
+        filename_lower = filename.lower()
+        
+        # Skip certain files
+        skip_patterns = [
+            'example', 'demo', 'sample',  # Skip example files
+            'bad_code',  # Skip intentionally bad code
+            'cursor_pr_review',  # Don't review ourselves  
+            '.github/',  # Skip GitHub files
+            'README', 'LICENSE', 'SETUP',  # Skip docs
+            '.md', '.txt', '.yml', '.yaml'  # Skip non-code files
+        ]
+        
+        return any(pattern in filename_lower for pattern in skip_patterns)
         
     def _build_prompt(self, files_content: Dict[str, List[tuple]]) -> str:
         """Build a simple, effective prompt."""
