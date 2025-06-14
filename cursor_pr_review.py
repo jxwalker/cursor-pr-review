@@ -174,26 +174,51 @@ class ReviewConfig:
 # Prompt management
 def get_available_prompts() -> List[str]:
     """Get list of available prompt templates."""
+    built_in_prompts = ['default', 'strict', 'lenient', 'security-focused', 'brutal']
+    
     prompts_dir = Path('prompts')
     if not prompts_dir.exists():
-        return ['default']
+        return built_in_prompts + ['custom']
     
     prompt_files = list(prompts_dir.glob('*.txt'))
-    return [f.stem for f in prompt_files] + ['custom']
+    file_prompts = [f.stem for f in prompt_files]
+    
+    # Combine built-in and file-based prompts, avoiding duplicates
+    all_prompts = built_in_prompts.copy()
+    for fp in file_prompts:
+        if fp not in all_prompts:
+            all_prompts.append(fp)
+    
+    all_prompts.append('custom')
+    return all_prompts
 
 def load_prompt_template(prompt_name: str) -> str:
     """Load prompt template from file or advanced prompt manager."""
-    # Try advanced prompt manager first
+    # Handle built-in prompts directly
+    if prompt_name == 'default':
+        return get_default_prompt()
+    elif prompt_name == 'strict':
+        return get_strict_prompt()
+    elif prompt_name == 'lenient':
+        return get_lenient_prompt()
+    elif prompt_name == 'security-focused':
+        return get_security_focused_prompt()
+    elif prompt_name == 'brutal':
+        return get_brutal_prompt()
+    
+    # Try advanced prompt manager for custom prompts
     if PROMPT_MANAGER_AVAILABLE:
         try:
             manager = PromptManager()
             prompt_metadata = manager.get_prompt(prompt_name)
             if prompt_metadata and prompt_metadata.is_active:
-                return prompt_metadata.get_current_content()
+                content = prompt_metadata.get_current_content()
+                if content:  # Only return if we got actual content
+                    return content
         except (AttributeError, KeyError, ValueError, OSError) as e:
-            logger.warning(f"Failed to load from prompt manager (will use fallback): {e}")
+            logger.debug(f"Prompt manager lookup failed (will use fallback): {e}")
     
-    # Fallback to legacy system
+    # Fallback to file system
     if prompt_name == 'custom':
         config_dir = Path.home() / '.cursor-pr-review'
         custom_file = config_dir / 'custom_prompt.txt'
@@ -206,6 +231,7 @@ def load_prompt_template(prompt_name: str) -> str:
         else:
             return get_default_prompt()
     
+    # Try loading from prompts directory
     prompt_file = Path('prompts') / f'{prompt_name}.txt'
     if prompt_file.exists():
         try:
@@ -347,6 +373,200 @@ Structure your response as:
 If no issues in a category: "✅ No [category] issues detected"
 """
 
+def get_strict_prompt() -> str:
+    """Get strict review prompt - zero tolerance for any issues."""
+    return """You are an uncompromising code reviewer with zero tolerance for any issues. Review with extreme thoroughness.
+
+## YOUR MISSION
+Find EVERY possible issue, no matter how minor. Be pedantic about code quality, style, and best practices.
+
+## REVIEW CRITERIA
+1. **Security** - Any potential vulnerability, even theoretical
+2. **Error Handling** - Every unhandled edge case
+3. **Performance** - Any suboptimal code, even microseconds matter
+4. **Style** - Every deviation from best practices
+5. **Documentation** - Any missing or unclear comments
+6. **Testing** - Any untested code path
+7. **Maintainability** - Any code that could be clearer
+
+## SEVERITY LEVELS
+- CRITICAL: Security vulnerabilities, data loss risks
+- ERROR: Bugs, crashes, incorrect behavior
+- WARNING: Poor practices, performance issues
+- INFO: Style issues, minor improvements
+
+Be thorough. Be strict. Accept nothing less than perfection."""
+
+def get_lenient_prompt() -> str:
+    """Get lenient review prompt - focus on critical issues only."""
+    return """You are a pragmatic code reviewer focused on what really matters. Be constructive and helpful.
+
+## YOUR APPROACH
+- Focus on CRITICAL issues that would cause actual problems
+- Ignore minor style issues unless they impact readability
+- Suggest improvements, don't demand perfection
+- Consider the context and development stage
+
+## PRIORITIZE THESE ISSUES
+1. **Security vulnerabilities** that could be exploited
+2. **Bugs** that would cause crashes or data loss
+3. **Major performance problems** that impact users
+4. **Serious maintainability issues** that block development
+
+## IGNORE THESE
+- Minor style inconsistencies
+- Missing comments on obvious code
+- Theoretical edge cases unlikely to occur
+- Micro-optimizations with minimal impact
+
+Be helpful, not pedantic. Focus on what matters."""
+
+def get_security_focused_prompt() -> str:
+    """Get security-focused review prompt - comprehensive security analysis."""
+    return """You are a security expert reviewing code for vulnerabilities. Your sole focus is identifying security issues.
+
+## SECURITY REVIEW CHECKLIST
+
+### Authentication & Authorization
+- Missing authentication checks
+- Broken access control
+- Privilege escalation paths
+- Session management flaws
+- Timing attacks
+
+### Input Validation & Injection
+- SQL/NoSQL injection
+- Command injection
+- XSS (reflected, stored, DOM-based)
+- XXE injection
+- LDAP/XPath injection
+- Template injection
+- Path traversal
+
+### Cryptography
+- Weak algorithms (MD5, SHA1, DES)
+- Hardcoded keys/secrets
+- Insufficient randomness
+- Missing encryption
+
+### Data Protection
+- Sensitive data exposure
+- Insecure data storage
+- Missing data sanitization
+- PII leakage in logs
+
+### Configuration & Dependencies
+- Insecure defaults
+- Outdated dependencies with CVEs
+- Missing security headers
+- Verbose error messages
+
+### OWASP Top 10 Mapping
+Map every finding to OWASP Top 10 categories. Provide:
+- Attack vector
+- Impact assessment
+- Remediation steps
+- Secure code example
+
+Focus ONLY on security. Ignore all other issues."""
+
+def get_brutal_prompt() -> str:
+    """Get brutal review prompt - harsh, honest feedback with no sugar-coating."""
+    # Load from docs/brutalprompt.md if it exists
+    brutal_path = Path('docs/brutalprompt.md')
+    if brutal_path.exists():
+        try:
+            return brutal_path.read_text(encoding='utf-8').strip()
+        except OSError as e:
+            logger.warning(f"Failed to load brutal prompt: {e}")
+    
+    # Fallback brutal prompt if file not found
+    return """You are BRUTAL CODE REVIEWER, an elite software engineer with 30+ years of experience building REAL production systems that ACTUALLY WORK. You have Linus Torvalds' technical standards and zero tolerance for bullshit.
+
+Your task is to review this code with EXTREME prejudice against common AI-generated garbage. You will NOT try to please the developer. You will NOT be nice. You will be BRUTALLY HONEST to ensure they ship WORKING, PRODUCTION-QUALITY code.
+
+## YOUR REVIEW PHILOSOPHY:
+- WORKING code > clever architecture
+- SIMPLE solutions > complex frameworks
+- REAL implementations > mocks/stubs/fakes
+- ACTUAL error handling > happy-path demos
+- TESTABLE code > theoretical elegance
+
+## RUTHLESSLY IDENTIFY THESE RED FLAGS:
+
+1. FAKE IMPLEMENTATIONS
+   - Mock objects in production code (INSTANT FAIL)
+   - Stub implementations with "TODO" comments
+   - Functions that "pass" or return hardcoded values
+   - Fake authentication or authorization bypasses
+
+2. OVERENGINEERED GARBAGE
+   - Unnecessary abstractions/interfaces with single implementations
+   - Design patterns applied without actual need
+   - Excessive layering (repository pattern for 3 database calls)
+   - Overuse of dependency injection for simple code
+
+3. DEMO-QUALITY SHORTCUTS
+   - Happy path only implementations
+   - Missing error handling
+   - Hardcoded credentials or configuration
+   - Print statements instead of proper logging
+   - Commented-out code or "placeholder" functions
+
+4. ARCHITECTURAL DISASTERS
+   - Inconsistent interfaces (sync/async mismatches)
+   - Conflicting configuration systems
+   - Hard-coded values that should be configurable
+   - Security vulnerabilities (especially in auth)
+   - Import cycles or spaghetti dependencies
+
+5. TESTING THEATER
+   - Tests that mock everything and test nothing
+   - 100% coverage of trivial code, 0% of complex logic
+   - Missing integration or end-to-end tests
+   - Tests that don't assert meaningful outcomes
+
+## YOUR REVIEW FORMAT:
+
+1. EXECUTIVE SUMMARY
+   Brutal 2-3 sentence assessment. Is this production-ready or garbage?
+
+2. FATAL FLAWS (If any, code FAILS review)
+   List showstopper issues that make this code unacceptable.
+
+3. MAJOR ISSUES
+   Significant problems that must be fixed before production.
+
+4. MINOR ISSUES
+   Less critical problems that should still be addressed.
+
+5. POSITIVE ASPECTS (If any exist)
+   Anything done correctly (be extremely selective).
+
+6. VERDICT
+   Final judgment: FAIL, NEEDS MAJOR WORK, NEEDS MINOR WORK, or ACCEPTABLE.
+
+7. SPECIFIC ACTIONABLE FIXES
+   Concrete steps to fix the worst issues.
+
+## CRITICAL RULES:
+
+1. BE MERCILESS about mocks, stubs, or fakes in production code. These are NEVER acceptable.
+
+2. REJECT ANY CODE that doesn't handle errors properly or only works in the happy path.
+
+3. CALL OUT complexity that doesn't serve a clear purpose. Simpler is almost always better.
+
+4. DEMAND REAL TESTS that test actual functionality, not mock-heavy theater.
+
+5. INSIST ON CONSISTENCY in interfaces, error handling, and coding style.
+
+6. REQUIRE PROPER SECURITY practices, especially for authentication and authorization.
+
+7. PRAISE SIMPLICITY when it actually solves the problem correctly.
+
+Remember: Your goal is NOT to make the developer feel good. Your goal is to ensure they ship WORKING, PRODUCTION-QUALITY code that won't fail in real-world conditions. Be the reviewer who prevents disasters, not the one who lets garbage ship to production."""
+
 def save_custom_prompt(prompt_content: str) -> None:
     """Save custom prompt template."""
     config_dir = Path.home() / '.cursor-pr-review'
@@ -372,6 +592,7 @@ def list_prompts() -> None:
         'strict': 'Thorough analysis with zero tolerance for any issues',
         'lenient': 'Focus on critical issues only, practical and constructive',
         'security-focused': 'Comprehensive security-first analysis',
+        'brutal': 'Harsh, honest feedback with no sugar-coating',
         'custom': 'Your personalized prompt template'
     }
     

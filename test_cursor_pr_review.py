@@ -464,8 +464,9 @@ class TestPromptManagement:
         mock_exists.return_value = False
         prompts = get_available_prompts()
         assert 'default' in prompts
-        # When prompts dir doesn't exist, only 'default' is returned
-        assert prompts == ['default']
+        # When prompts dir doesn't exist, built-in prompts and 'custom' are returned
+        expected_prompts = ['default', 'strict', 'lenient', 'security-focused', 'brutal', 'custom']
+        assert prompts == expected_prompts
     
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.glob')
