@@ -917,6 +917,11 @@ class APIClient:
             
             # Analyze the diff with enhanced detectors
             analysis_report = analyzer.analyze_diff(diff)
+            logger.info(f"Initial analysis found {analysis_report['summary']['total_issues']} issues")
+            # Log breakdown by section
+            for section_name, section_data in analysis_report['sections'].items():
+                if section_data['count'] > 0:
+                    logger.info(f"  - {section_name}: {section_data['count']} issues")
             
             # Integrate external tool findings BEFORE AI analysis
             if coderabbit_comments or github_ai_prompt:
@@ -959,7 +964,9 @@ class APIClient:
             
             logger.debug(f"Final report has {analysis_report['summary']['total_issues']} total issues")
             # Convert the final deduplicated report to comments format
-            return self._convert_report_to_comments(analysis_report)
+            comments = self._convert_report_to_comments(analysis_report)
+            logger.debug(f"Converted to {len(comments)} comments for posting")
+            return comments
         
         except (ImportError, AttributeError, KeyError, ValueError, TypeError) as e:
             logger.warning(f"Enhanced analysis failed, falling back to standard analysis: {type(e).__name__}: {e}")
@@ -1105,6 +1112,7 @@ class APIClient:
         if analysis_report['summary']['total_issues'] > 0:
             # First, group similar issues together
             grouped_issues = self._group_similar_issues(analysis_report)
+            logger.info(f"Grouped {analysis_report['summary']['total_issues']} issues into {len(grouped_issues)} groups")
             
             # Filter out groups with only unknown locations or only test/example files
             filtered_groups = []
@@ -1122,6 +1130,7 @@ class APIClient:
                     filtered_groups.append(group)
             
             grouped_issues = filtered_groups
+            logger.info(f"After filtering: {len(grouped_issues)} groups with valid issues")
             
             # Create comments for grouped issues
             for group in grouped_issues:
